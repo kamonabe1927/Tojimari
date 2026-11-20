@@ -72,7 +72,7 @@ Tojimari はセキュリティを担保しない。表示はあくまで確認�
 ## 6. 1.1 で未決のこと
 
 - JSON の項目名と構造、人が読む表の見た目
-- 実装言語、コマンド名（requirements.md の未決事項）
+- コマンド名（requirements.md の未決事項）。実装言語は Python に決まった（manifest.md の 4）
 - 対応する AlmaLinux のバージョン（検証用 VM は 10.2）
 
 ## 7. 検証用 VM での見込み
