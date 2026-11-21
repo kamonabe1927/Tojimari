@@ -115,7 +115,7 @@
 | 8 | `git status` | 実行のあとに、リポジトリに新しいファイル（`__pycache__` など）ができていない |
 
 - 6 の呼び方は、実装で決まったものに置き換える
-- 履歴の 1 番に含まれた件数だけを確かめたいときは、次で数だけを出せる（中身は出ない）。`sudo python3 -B -c "import sqlite3; c=sqlite3.connect('file:/var/lib/dnf/history.sqlite?mode=ro', uri=True); print(c.execute('select count(distinct r.name) from trans_item t join rpm r on r.item_id=t.item_id where t.trans_id=1').fetchone()[0])"`
+- 履歴の 1 番に含まれた件数だけを確かめたいときは、次で数だけを出せる（中身は出ない）。開き方は実装と同じ `mode=ro&immutable=1` にする（`mode=ro` だけで開くと `/var/lib/dnf/` にファイルが作られることがある。[design-issue-12.md](design-issue-12.md) の 2.2 と 9 の J）。`sudo python3 -B -c "import sqlite3; c=sqlite3.connect('file:/var/lib/dnf/history.sqlite?mode=ro&immutable=1', uri=True); print(c.execute('select count(distinct r.name) from trans_item t join rpm r on r.item_id=t.item_id where t.trans_id=1').fetchone()[0])"`
 
 ## 7. テックリードへの申し送り
 
