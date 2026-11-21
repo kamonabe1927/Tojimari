@@ -156,12 +156,143 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(table.render_table(r), self.text)
 
 
+def section(text):
+    lines = text.split("\n")
+    i = lines.index(next(l for l in lines if l.startswith("[後から入れたもの]")))
+    end = len(lines)
+    for j in range(i + 1, len(lines)):
+        if lines[j] == "" or lines[j] == "[注意]":
+            end = j
+            break
+    return lines[i:end]
+
+
+def with_ui(**ui):
+    r = report()
+    r["checks"]["user_installed"] = ui
+    return r
+
+
+def entry(name, evr, arch="aarch64", from_repo="baseos"):
+    return {"name": name, "epoch": None, "version": evr, "release": "1",
+            "arch": arch, "evr": evr, "from_repo": from_repo}
+
+
+class UserInstalledTableTest(unittest.TestCase):
+    def setUp(self):
+        self.report = report()
+        self.text = table.render_table(self.report)
+        self.lines = self.text.split("\n")
+
+    def test_position(self):
+        i = self.lines.index(next(l for l in self.lines if l.startswith("[後から入れたもの]")))
+        self.assertGreater(i, self.lines.index("[重点リスト]"))
+        self.assertLess(i, self.lines.index("[注意]"))
+        self.assertTrue(self.lines[i - 1] == "")
+        kernel = [n for n, l in enumerate(self.lines) if l.startswith("動いているカーネル")][0]
+        self.assertEqual(self.lines[kernel + 1], "")
+        self.assertEqual(kernel + 2, i)
+        self.assertEqual(self.lines[self.lines.index("[注意]") - 1], "")
+
+    def test_history_section(self):
+        sec = section(self.text)
+        self.assertEqual(sec[0], "[後から入れたもの]  dnf 履歴の 1 番の名前を除いた 4 件")
+        self.assertEqual(
+            [l.split() for l in sec[1:]],
+            [["パッケージ", "バージョン", "アーキ", "入れた元"],
+             ["gh", "2.65.0-1", "aarch64", "gh-cli"],
+             ["git", "2.47.1-1.el10", "aarch64", "appstream"],
+             ["htop", "3.3.0-5.el10", "aarch64", "epel"],
+             ["openssl", "1:3.5.1-3.el10", "aarch64", "appstream"]],
+        )
+
+    def test_columns_aligned(self):
+        sec = section(self.text)
+        for word in ("バージョン", "アーキ", "入れた元"):
+            pos = col_of(sec[1], word)
+            self.assertGreater(pos, 0)
+        self.assertEqual(col_of(sec[2], "2.65.0-1"), col_of(sec[1], "バージョン"))
+        self.assertEqual(col_of(sec[2], "aarch64"), col_of(sec[1], "アーキ"))
+        self.assertEqual(col_of(sec[2], "gh-cli"), col_of(sec[1], "入れた元"))
+        for l in sec:
+            self.assertEqual(l, l.rstrip())
+
+    def test_fallback_heading(self):
+        r = report(history=recorded_error())
+        self.assertEqual(
+            section(table.render_table(r))[0],
+            "[後から入れたもの]  入れた元が anaconda のものを除いた 5 件（代わりの判定）",
+        )
+
+    def test_unknown_method_heading(self):
+        r = with_ui(status="ok", method="zzz", packages=[entry("a", "1")])
+        self.assertEqual(section(table.render_table(r))[0], "[後から入れたもの]  1 件")
+
+    def test_multiple_versions(self):
+        r = with_ui(status="ok", method="history",
+                    packages=[entry("a", "1.0"), entry("a", "2.0"), entry("b", "1.0")])
+        sec = section(table.render_table(r))
+        self.assertEqual(sec[0], "[後から入れたもの]  dnf 履歴の 1 番の名前を除いた 2 件")
+        self.assertTrue(sec[2].startswith("a "))
+        self.assertEqual(sec[3][: sec[3].index("2.0")].strip(), "")
+        self.assertTrue(sec[4].startswith("b "))
+
+    def test_null_from_repo(self):
+        r = with_ui(status="ok", method="history",
+                    packages=[entry("a", "1.0", from_repo=None)])
+        sec = section(table.render_table(r))
+        self.assertTrue(sec[2].endswith("aarch64  -"))
+
+    def test_zero(self):
+        r = with_ui(status="ok", method="history", packages=[])
+        self.assertEqual(
+            section(table.render_table(r)),
+            ["[後から入れたもの]  dnf 履歴の 1 番の名前を除いた 0 件", "該当なし"],
+        )
+
+    def test_unavailable_and_unknown_status(self):
+        for st in ("unavailable", "zzz"):
+            with self.subTest(status=st):
+                r = with_ui(status=st, method=None, packages=[entry("a", "1.0")])
+                self.assertEqual(
+                    section(table.render_table(r)),
+                    ["[後から入れたもの]", "確認できませんでした"],
+                )
+
+    def test_missing_key(self):
+        r = copy.deepcopy(self.report)
+        del r["checks"]["user_installed"]
+        t = table.render_table(r)
+        self.assertNotIn("[後から入れたもの]", t)
+        self.assertIn("[注意]", t)
+
+    def test_all_content_present(self):
+        for p in self.report["checks"]["user_installed"]["packages"]:
+            for k in ("name", "evr", "arch", "from_repo"):
+                self.assertIn(p[k], self.text)
+
+    def test_focus_section_unchanged(self):
+        r = copy.deepcopy(self.report)
+        del r["checks"]["user_installed"]
+        old = table.render_table(r)
+        a = old.split("[注意]")[0].rstrip("\n")
+        self.assertTrue(self.text.startswith(a))
+
+
+def recorded_error():
+    from tojimari.history import HistoryError
+    return HistoryError("not_found")
+
+
 class NoGuaranteeWordsTest(unittest.TestCase):
     WORDS = ["保証", "担保", "安全です", "守られています"]
 
     def test_words_absent(self):
         r = report(root=False, dnf=CommandError("not_found"), kernel=None)
         texts = [n["message"] for n in r["notices"]]
+        r2 = report(history=recorded_error(), userinstalled=CommandError("timeout"))
+        texts += [n["message"] for n in r2["notices"]]
+        texts.append(table.render_table(r2))
         texts.append(table.render_table(r))
         texts.append(table.render_table(report()))
         for t in texts:

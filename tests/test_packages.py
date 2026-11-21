@@ -34,6 +34,22 @@ class ArgvTest(unittest.TestCase):
             ],
         )
 
+    def test_userinstalled_argv(self):
+        argv = packages.DNF_USERINSTALLED_ARGV
+        self.assertEqual(
+            argv,
+            [
+                "/usr/bin/dnf",
+                "repoquery",
+                "--userinstalled",
+                "--cacheonly",
+                "--quiet",
+                "--queryformat",
+                packages.DNF_QUERYFORMAT,
+            ],
+        )
+        self.assertTrue(argv[0].startswith("/"))
+
 
 class ParseRpmTest(unittest.TestCase):
     def test_all_installed(self):

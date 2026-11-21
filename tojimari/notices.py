@@ -23,10 +23,24 @@ FROM_REPO_UNAVAILABLE = (
 RUNNING_KERNEL_NOT_FOUND = (
     "動いているカーネルが、rpm の記録にある kernel の版の中に見つかりませんでした。"
 )
+HISTORY_FALLBACK = (
+    "dnf 履歴を読み取れなかったため（理由: {reason}）、"
+    "入れた元のリポジトリが anaconda かどうかによる代わりの判定を使いました。"
+    "精度が落ちており、インストール後に更新した OS 標準のパッケージが"
+    "「後から入れたもの」に混ざることがあります。"
+)
+USER_INSTALLED_UNAVAILABLE = (
+    "後から入れたものの一覧を取得できなかったため、確認できませんでした（理由: {reason}）。"
+    "「後から入れたものは無い」という意味ではありません。"
+)
 
 
 def build_notices(
-    is_root: bool, from_repo_problem: str | None, running_kernel_found: bool
+    is_root: bool,
+    from_repo_problem: str | None,
+    running_kernel_found: bool,
+    history_problem: str | None = None,
+    user_installed_problem: str | None = None,
 ) -> list[dict]:
     notices = [
         {"id": "not_a_guarantee", "message": NOT_A_GUARANTEE},
@@ -45,5 +59,21 @@ def build_notices(
     if not running_kernel_found:
         notices.append(
             {"id": "running_kernel_not_found", "message": RUNNING_KERNEL_NOT_FOUND}
+        )
+    if history_problem is not None:
+        notices.append(
+            {
+                "id": "history_fallback",
+                "message": HISTORY_FALLBACK.format(reason=history_problem),
+            }
+        )
+    if user_installed_problem is not None:
+        notices.append(
+            {
+                "id": "user_installed_unavailable",
+                "message": USER_INSTALLED_UNAVAILABLE.format(
+                    reason=user_installed_problem
+                ),
+            }
         )
     return notices

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from tests import recorded
 from tests.recorded import FakeSystem
-from tojimari import check
+from tojimari import check, history
 from tojimari.check import CheckError
 from tojimari.runner import CommandError
 
@@ -198,7 +198,7 @@ class ReportShapeTest(unittest.TestCase):
         self.assertEqual(r["schema_version"], 1)
         self.assertEqual(r["generated_at"], "2026-11-21T09:39:12Z")
         self.assertRegex(r["generated_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertEqual(list(r["checks"]), ["focus_packages"])
+        self.assertEqual(list(r["checks"]), ["focus_packages", "user_installed"])
         self.assertEqual(list(r["run"]), ["is_root"])
         self.assertEqual(list(r["system"]), ["running_kernel"])
         self.assertEqual(
@@ -224,12 +224,182 @@ class ReportShapeTest(unittest.TestCase):
 
     def test_no_future_keys(self):
         r = check.collect(FakeSystem())
-        self.assertNotIn("user_installed", r["checks"])
         self.assertNotIn("staleness", r["checks"])
         for p in r["checks"]["focus_packages"]["packages"]:
             for v in p["installed"]:
                 self.assertNotIn("running", v)
                 self.assertNotIn("systemd_service", v)
+
+
+def ui(report):
+    return report["checks"]["user_installed"]
+
+
+def ui_keys(report):
+    return [(p["name"], p["version"], p["release"]) for p in ui(report)["packages"]]
+
+
+class UserInstalledTest(unittest.TestCase):
+    def test_history_method(self):
+        s = FakeSystem()
+        r = check.collect(s)
+        self.assertTrue(s.history_called)
+        self.assertEqual(ui(r)["status"], "ok")
+        self.assertEqual(ui(r)["method"], "history")
+        # kernel の 2 つの版（50 と 55）、kernel-core、更新された bash、sudo は除かれる
+        self.assertEqual(
+            [p["name"] for p in ui(r)["packages"]], ["gh", "git", "htop", "openssl"]
+        )
+        self.assertNotIn("history_fallback", notice_ids(r))
+        self.assertNotIn("user_installed_unavailable", notice_ids(r))
+
+    def test_entries(self):
+        r = check.collect(FakeSystem())
+        by = {p["name"]: p for p in ui(r)["packages"]}
+        self.assertEqual(
+            by["git"],
+            {"name": "git", "epoch": None, "version": "2.47.1", "release": "1.el10",
+             "arch": "aarch64", "evr": "2.47.1-1.el10", "from_repo": "appstream"},
+        )
+        self.assertEqual(by["openssl"]["epoch"], "1")
+        self.assertEqual(by["openssl"]["evr"], "1:3.5.1-3.el10")
+
+    def test_fallback_each_kind(self):
+        for kind in ("not_found", "permission", "os_error", "busy", "changed",
+                     "query_failed", "missing_columns", "no_first_transaction",
+                     "no_rpm_items"):
+            with self.subTest(kind=kind):
+                r = check.collect(FakeSystem(history=history.HistoryError(kind)))
+                self.assertEqual(ui(r)["status"], "ok")
+                self.assertEqual(ui(r)["method"], "from_repo_fallback")
+                names = [p["name"] for p in ui(r)["packages"]]
+                # anaconda の行を持つ kernel、kernel-core、sudo は除かれ、bash は残る
+                self.assertEqual(names, ["bash", "gh", "git", "htop", "openssl"])
+                n = [n for n in r["notices"] if n["id"] == "history_fallback"]
+                self.assertEqual(len(n), 1)
+                self.assertIn(history.reason_text(kind), n[0]["message"])
+
+    def test_unavailable(self):
+        cases = [
+            CommandError("not_found"),
+            CommandError("timeout"),
+            CommandError("exit_status", returncode=1),
+            CommandError("os_error"),
+            "",
+            "kernel\tonly-two-fields\n",
+            "zzz\t0\t1\t1\taarch64\tbaseos\n",
+        ]
+        for value in cases:
+            with self.subTest(value=repr(value)):
+                s = FakeSystem(userinstalled=value)
+                r = check.collect(s)
+                self.assertEqual(
+                    ui(r), {"status": "unavailable", "method": None, "packages": []}
+                )
+                self.assertFalse(s.history_called)
+                self.assertIn("user_installed_unavailable", notice_ids(r))
+                self.assertNotIn("history_fallback", notice_ids(r))
+                self.assertNotIn("from_repo_unavailable", notice_ids(r))
+                self.assertTrue(r["checks"]["focus_packages"]["from_repo_available"])
+
+    def test_unavailable_reasons(self):
+        def reason(value):
+            r = check.collect(FakeSystem(userinstalled=value))
+            return [n for n in r["notices"] if n["id"] == "user_installed_unavailable"][0]["message"]
+        self.assertIn("dnf が 60 秒で終わらなかった", reason(CommandError("timeout")))
+        self.assertIn("dnf の出力に読み取れる行が無かった", reason(""))
+        self.assertIn("dnf の出力が rpm の記録と突き合わなかった",
+                      reason("zzz\t0\t1\t1\taarch64\tbaseos\n"))
+
+    def test_stderr_not_in_report(self):
+        err = CommandError("exit_status", returncode=1, stderr_tail="SECRETLIKE-TEXT")
+        r = check.collect(FakeSystem(userinstalled=err))
+        self.assertNotIn("SECRETLIKE-TEXT", repr(r))
+
+    def test_zero_items(self):
+        names = frozenset({"kernel", "kernel-core", "bash", "sudo", "git", "htop",
+                           "gh", "openssl"})
+        r = check.collect(FakeSystem(history=names))
+        self.assertEqual(ui(r), {"status": "ok", "method": "history", "packages": []})
+        self.assertEqual(
+            notice_ids(r), ["not_a_guarantee", "scope", "running_is_snapshot"]
+        )
+
+    def test_multiple_versions_all_listed(self):
+        r = check.collect(FakeSystem(history=frozenset({"bash", "sudo"})))
+        kernels = [p for p in ui(r)["packages"] if p["name"] == "kernel"]
+        self.assertEqual([p["release"] for p in kernels], ["50.el10", "55.el10"])
+        self.assertEqual([p["from_repo"] for p in kernels], ["anaconda", "baseos"])
+
+    def test_from_repo_null_when_key_missing(self):
+        dnf = (
+            "git\t0\t2.47.1\t1.el10\taarch64\tappstream\n"
+        )
+        rpm = (
+            recorded.RPM_ALL_INSTALLED
+            + "git\t\t2.46.0\t1.el10\taarch64\n"
+        )
+        r = check.collect(FakeSystem(rpm=rpm, userinstalled=dnf))
+        git = [p for p in ui(r)["packages"] if p["name"] == "git"]
+        self.assertEqual([p["version"] for p in git], ["2.46.0", "2.47.1"])
+        self.assertEqual([p["from_repo"] for p in git], [None, "appstream"])
+
+    def test_only_rpm_names_used(self):
+        # dnf にだけある名前（rpm に無い）と、rpm にだけある名前は入れない
+        dnf = (
+            "git\t0\t2.47.1\t1.el10\taarch64\tappstream\n"
+            "ghost\t0\t1\t1\taarch64\tepel\n"
+        )
+        r = check.collect(FakeSystem(userinstalled=dnf, history=frozenset({"sudo"})))
+        self.assertEqual([p["name"] for p in ui(r)["packages"]], ["git"])
+
+    def test_focus_name_also_listed(self):
+        dnf = recorded.DNF_USERINSTALLED + "systemd\t0\t257\t9.el10\taarch64\tbaseos\n"
+        r = check.collect(FakeSystem(userinstalled=dnf))
+        self.assertIn("systemd", [p["name"] for p in ui(r)["packages"]])
+        self.assertEqual(pkg(r, "systemd")["status"], "installed")
+
+    def test_sorted(self):
+        r = check.collect(FakeSystem(history=frozenset()))
+        keys = [(p["name"], p["version"], p["release"], p["arch"]) for p in ui(r)["packages"]]
+        self.assertEqual(keys, sorted(keys))
+
+    def test_key_order(self):
+        r = check.collect(FakeSystem())
+        self.assertEqual(list(ui(r)), ["status", "method", "packages"])
+        for v in ui(r)["packages"]:
+            self.assertEqual(
+                list(v),
+                ["name", "epoch", "version", "release", "arch", "evr", "from_repo"],
+            )
+
+    def test_notice_order(self):
+        r = check.collect(
+            FakeSystem(root=False, dnf=CommandError("not_found"), kernel=None,
+                       history=history.HistoryError("busy"))
+        )
+        self.assertEqual(
+            notice_ids(r),
+            ["not_a_guarantee", "scope", "running_is_snapshot", "not_root",
+             "from_repo_unavailable", "running_kernel_not_found", "history_fallback"],
+        )
+        r = check.collect(
+            FakeSystem(root=False, dnf=CommandError("not_found"), kernel=None,
+                       userinstalled=CommandError("not_found"))
+        )
+        self.assertEqual(
+            notice_ids(r)[-2:], ["running_kernel_not_found", "user_installed_unavailable"]
+        )
+
+    def test_focus_unchanged_when_userinstalled_fails(self):
+        a = check.collect(FakeSystem())["checks"]["focus_packages"]
+        b = check.collect(FakeSystem(userinstalled=CommandError("timeout")))["checks"]["focus_packages"]
+        self.assertEqual(a, b)
+
+    def test_os_names_from_repo(self):
+        m = {("a", "0", "1", "1", "x"): "anaconda", ("a", "0", "2", "1", "x"): "baseos",
+             ("b", "0", "1", "1", "x"): "baseos"}
+        self.assertEqual(check.os_names_from_repo(m), frozenset({"a"}))
 
 
 class ErrorTest(unittest.TestCase):
