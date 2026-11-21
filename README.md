@@ -51,4 +51,4 @@ Tojimari はセキュリティソフトではありません。セキュリテ�
 2. 現状とあるべき状態の差分を抽出できる
 3. 差分を反映できる
 
-詳しくは [docs/requirements.md](docs/requirements.md) を参照してください。
+目指す先と段階ごとの到達点は [docs/vision.md](docs/vision.md)、決めた経緯は [docs/requirements.md](docs/requirements.md) を参照してください。
