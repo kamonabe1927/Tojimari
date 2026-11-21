@@ -2,6 +2,7 @@
 
 - 作成日: 2026-11-21（issue #5 で PM が決めた）
 - 状態: 1.1 の出力の決定事項。後から入れたもの、古さ、今動いているかの印は、この文書の「後で足す項目」の決まりに沿って足す
+- 更新: 2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
 - 位置付け: [spec-1.1.md](spec-1.1.md) の 6「1.1 で未決のこと」のうち、JSON の項目名と構造、人が読む表の見た目、コマンド名と起動のしかたを決める。1.1 の直後に足す FastAPI の画面も、この JSON を読んで表示する
 
 ## 1. コマンドと起動のしかた
@@ -154,7 +155,8 @@ sudo python3 -B -m tojimari check --json   # JSON
 | `not_root` | `run.is_root` が false のとき | root なしで実行したため、見えた範囲だけを表示している。`sudo` での実行を勧める |
 | `from_repo_unavailable` | `from_repo_available` が false のとき | 入れた元のリポジトリを取得できなかった（理由の要約を含める） |
 | `running_kernel_not_found` | 動いているカーネルが、入っている kernel の版のどれとも一致しないとき、または取れなかったとき | 動いているカーネルが rpm の記録の中に見つからなかった |
-| `history_fallback` | （後で足す）履歴が取れず、`from_repo` による代わりの判定を使ったとき | 代わりの判定を使ったため精度が落ちている |
+| `history_fallback` | `checks.user_installed.method` が `from_repo_fallback` のとき（2.6） | dnf 履歴が取れず、入れた元のリポジトリが `anaconda` かによる代わりの判定を使ったため精度が落ちている（インストール後に更新した OS 標準が、後から入れたものに混ざりうる）。履歴が取れなかった理由の要約を含める |
+| `user_installed_unavailable` | `checks.user_installed.status` が `unavailable` のとき（2.6） | 後から入れたものの一覧を取得できなかったため、確認できなかった。「後から入れたものは無い」という意味ではない。理由の要約を含める |
 
 - `scope`、`running_is_snapshot`、`not_root`、`history_fallback` は spec-1.1.md の「3. 表示の注意」にあたる
 - `running_is_snapshot` は、今動いているかの印をまだ出さない今回も出す（spec-1.1.md の 3 が「出力に必ず含める」としているため）
@@ -163,7 +165,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 ### 2.5 後で足す項目の決まり
 
 - 後で足す確認は、`checks` の下に新しいキーとして足す。予定しているキーは次のとおり
-  - `user_installed`: 後から入れたもの（spec-1.1.md の 2.1）。要素は 2.3 の形
+  - `user_installed`: 後から入れたもの（spec-1.1.md の 2.1）。2.6 に決めた（issue #12）
   - `staleness`: 古さ（spec-1.1.md の 2.3）
 - 今動いているかの印（spec-1.1.md の 2.4）は、2.3 の版の要素に項目を足す形にする（予定する名前: `running`、`systemd_service`。どちらも真偽。中身はその issue で決める）
 - 読む側（表の出力、1.1 の直後の画面）は次を守る
@@ -171,6 +173,40 @@ sudo python3 -B -m tojimari check --json   # JSON
   - 知らない項目は無視する
   - `format` が `"tojimari-check"` でないとき、または `schema_version` が知らない値のときは、表示せずにその旨を出す
 - 項目を足すだけなら `schema_version` は上げない。意味や型を変えるときは上げ、この文書に変えた理由を残す
+
+### 2.6 `checks.user_installed`（後から入れたもの）
+
+issue #12 で決めた。判定のしかたと、取れないときの扱いの要件は [task-issue-12.md](task-issue-12.md) の 3 にある。
+
+```json
+{
+  "status": "ok",
+  "method": "history",
+  "packages": [
+    {
+      "name": "git",
+      "epoch": null,
+      "version": "2.47.1",
+      "release": "1.el10",
+      "arch": "aarch64",
+      "evr": "2.47.1-1.el10",
+      "from_repo": "appstream"
+    }
+  ]
+}
+```
+
+| 項目 | 型 | 内容 |
+|---|---|---|
+| `status` | 文字列 | `ok`（判定できた。0 件のときも `ok`）、`unavailable`（後から入れたものの一覧を取得できず、判定できなかった） |
+| `method` | 文字列 または null | 使った判定。`history`（dnf 履歴の 1 番の名前を除いた）、`from_repo_fallback`（履歴が取れず、`from_repo` が `anaconda` のものを除いた）。`status` が `unavailable` なら null |
+| `packages` | 配列 | 後から入れたものの版。要素は 2.3 の形（`is_running_kernel` は付けない）。`status` が `unavailable` なら空配列 |
+
+- `packages` の並びは、名前、version、release、arch の文字列の昇順。同じ名前の版が複数あれば、すべて並べる
+- 版の値は rpm の記録から取る。`from_repo` は dnf の記録から取り、取れなければ null
+- 重点リストに入っている名前でも、後から入れたものに当たれば、ここにも出す（重点リストは別枠のため）
+- `status` が `unavailable` のとき、`packages` が空であることを「後から入れたものは無い」と扱わない。読む側は `status` を先に見る
+- 今動いているかの印（1.1-C）は、2.5 のとおり後で版の要素に足す
 
 ## 3. 人が読む表
 
@@ -210,3 +246,23 @@ polkit           入っていない  -
 - 列は日本語の文字幅（全角は 2 桁）を考えて揃える（標準ライブラリの `unicodedata.east_asian_width` で足りる）
 - 色や罫線の装飾は使わない（端末やリダイレクト先を選ばないため）
 - 表に出す中身は JSON と同じものに限る。表だけに出る情報を作らない（画面と標準出力で内容がずれないようにするため）
+
+### 3.3 後から入れたもの（issue #12 で足した）
+
+重点リストの表の後、`[注意]` の前に出す（例の値は架空のもの）。
+
+```
+[後から入れたもの]  dnf 履歴の 1 番の名前を除いた 3 件
+パッケージ       バージョン          アーキ   入れた元
+gh               2.65.0-1            aarch64  gh-cli
+git              2.47.1-1.el10       aarch64  appstream
+htop             3.3.0-5.el10        aarch64  epel
+```
+
+- 見出しの後に、使った判定と件数を出す。件数はパッケージ名の数とする
+  - `history` のとき: 「dnf 履歴の 1 番の名前を除いた N 件」
+  - `from_repo_fallback` のとき: 「入れた元が anaconda のものを除いた N 件（代わりの判定）」。理由と精度の注意は `[注意]` の `history_fallback` に出す
+- 0 件のときは、列の見出しを出さず「該当なし」と出す
+- `status` が `unavailable` のときは、列の見出しを出さず「確認できませんでした」と出す。理由は `[注意]` の `user_installed_unavailable` に出す
+- 版が複数あるときは、2 行目からパッケージ名を空けて並べる（重点リストと同じ）
+- 取れなかった値は `-`、列の揃え方と装飾の決まりは 3.2 と同じ
