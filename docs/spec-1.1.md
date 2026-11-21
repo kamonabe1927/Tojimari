@@ -71,9 +71,11 @@ Tojimari はセキュリティを担保しない。表示はあくまで確認�
 
 ## 6. 1.1 で未決のこと
 
-- JSON の項目名と構造、人が読む表の見た目
-- コマンド名（requirements.md の未決事項）。実装言語は Python に決まった（manifest.md の 4）
 - 対応する AlmaLinux のバージョン（検証用 VM は 10.2）
+
+決まったこと（2026-11-21、issue #5）:
+
+- JSON の項目名と構造、人が読む表の見た目、コマンド名（`tojimari check`）と起動のしかたは [output-1.1.md](output-1.1.md) に決めた。実装言語は Python に決まっている（manifest.md の 4）
 
 ## 7. 検証用 VM での見込み
 

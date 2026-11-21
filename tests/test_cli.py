@@ -1,0 +1,73 @@
+import io
+import json
+import unittest
+
+from tests import recorded
+from tests.recorded import FakeSystem
+from tojimari import check, cli, table
+from tojimari.runner import CommandError
+
+
+def run(argv, system=None):
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(argv, system=system or FakeSystem(), stdout=out, stderr=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+class CliTest(unittest.TestCase):
+    def test_table(self):
+        code, out, err = run(["check"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertTrue(out.startswith("Tojimari check  "))
+        self.assertEqual(out, table.render_table(check.collect(FakeSystem())))
+
+    def test_json(self):
+        code, out, err = run(["check", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(json.loads(out), check.collect(FakeSystem()))
+        self.assertTrue(out.endswith("}\n"))
+        self.assertIn("\n  \"format\"", out)
+
+    def test_json_keeps_order_and_japanese(self):
+        _, out, _ = run(["check", "--json"])
+        self.assertLess(out.index('"format"'), out.index('"notices"'))
+        self.assertIn("外から届く入口", out)
+        self.assertNotIn("\\u", out)
+
+    def test_rpm_failure(self):
+        for argv in (["check"], ["check", "--json"]):
+            with self.subTest(argv=argv):
+                sysm = FakeSystem(rpm=CommandError("not_found"))
+                code, out, err = run(argv, sysm)
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertTrue(err.startswith("tojimari: "))
+                self.assertIn("rpm", err)
+
+    def test_rpm_parse_failure(self):
+        code, out, err = run(["check", "--json"], FakeSystem(rpm=recorded.RPM_MALFORMED))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("tojimari: ", err)
+
+    def test_dnf_failure_still_zero(self):
+        code, out, _ = run(["check", "--json"], FakeSystem(dnf=CommandError("timeout")))
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)["checks"]["focus_packages"]["from_repo_available"])
+
+    def test_bad_args(self):
+        for argv in ([], ["unknown"], ["check", "--unknown"]):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                import contextlib
+                with contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as cm:
+                        cli.main(argv, system=FakeSystem(), stdout=io.StringIO(),
+                                 stderr=io.StringIO())
+                self.assertEqual(cm.exception.code, 2)
+                self.assertIn("usage", err.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
