@@ -337,7 +337,7 @@ output-1.1.md の決定は変えていない。読み取りに幅がある所を
 ## 8. Python の版
 
 - AlmaLinux 10.2 の python3 と、作業環境の Python 3.11 の両方で動かす
-- 3.12 以降だけの書き方を使わない（`type` 文、`def f[T]` の形、f 文字列の中で外側と同じ引用符を使う書き方、`itertools.batched`、`datetime.UTC` 以外の新しい API など）。時刻は `datetime.timezone.utc` を使う
+- 3.12 以降だけの書き方を使わない（`type` 文、`def f[T]` の形、f 文字列の中で外側と同じ引用符を使う書き方、`itertools.batched` など）。時刻は `datetime.timezone.utc` を使う
 - AlmaLinux 10.2 の python3 の版は手元で確かめていない（実機確認の A）
 
 ## 9. 手元で確かめられていないこと（実機確認の手順に入れる）
