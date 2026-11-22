@@ -172,7 +172,9 @@ class NoticeTest(unittest.TestCase):
     def test_always_three_and_order(self):
         r = check.collect(FakeSystem())
         self.assertEqual(
-            notice_ids(r), ["not_a_guarantee", "scope", "running_is_snapshot"]
+            notice_ids(r),
+            ["not_a_guarantee", "scope", "running_is_snapshot",
+             "security_updates_cache"],
         )
 
     def test_order_with_all(self):
@@ -182,7 +184,8 @@ class NoticeTest(unittest.TestCase):
         self.assertEqual(
             notice_ids(r),
             ["not_a_guarantee", "scope", "running_is_snapshot", "not_root",
-             "from_repo_unavailable", "running_kernel_not_found"],
+             "from_repo_unavailable", "running_kernel_not_found",
+             "security_updates_cache", "reboot_unknown"],
         )
 
 
@@ -198,7 +201,9 @@ class ReportShapeTest(unittest.TestCase):
         self.assertEqual(r["schema_version"], 1)
         self.assertEqual(r["generated_at"], "2026-11-21T09:39:12Z")
         self.assertRegex(r["generated_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertEqual(list(r["checks"]), ["focus_packages", "user_installed"])
+        self.assertEqual(
+            list(r["checks"]), ["focus_packages", "user_installed", "staleness"]
+        )
         self.assertEqual(list(r["run"]), ["is_root"])
         self.assertEqual(list(r["system"]), ["running_kernel"])
         self.assertEqual(
@@ -224,7 +229,6 @@ class ReportShapeTest(unittest.TestCase):
 
     def test_no_future_keys(self):
         r = check.collect(FakeSystem())
-        self.assertNotIn("staleness", r["checks"])
         for p in r["checks"]["focus_packages"]["packages"]:
             for v in p["installed"]:
                 self.assertNotIn("running", v)
@@ -322,7 +326,9 @@ class UserInstalledTest(unittest.TestCase):
         r = check.collect(FakeSystem(history=names))
         self.assertEqual(ui(r), {"status": "ok", "method": "history", "packages": []})
         self.assertEqual(
-            notice_ids(r), ["not_a_guarantee", "scope", "running_is_snapshot"]
+            notice_ids(r),
+            ["not_a_guarantee", "scope", "running_is_snapshot",
+             "security_updates_cache"],
         )
 
     def test_multiple_versions_all_listed(self):
@@ -381,14 +387,17 @@ class UserInstalledTest(unittest.TestCase):
         self.assertEqual(
             notice_ids(r),
             ["not_a_guarantee", "scope", "running_is_snapshot", "not_root",
-             "from_repo_unavailable", "running_kernel_not_found", "history_fallback"],
+             "from_repo_unavailable", "running_kernel_not_found", "history_fallback",
+             "security_updates_cache", "reboot_unknown"],
         )
         r = check.collect(
             FakeSystem(root=False, dnf=CommandError("not_found"), kernel=None,
                        userinstalled=CommandError("not_found"))
         )
         self.assertEqual(
-            notice_ids(r)[-2:], ["running_kernel_not_found", "user_installed_unavailable"]
+            notice_ids(r)[-4:],
+            ["running_kernel_not_found", "user_installed_unavailable",
+             "security_updates_cache", "reboot_unknown"],
         )
 
     def test_focus_unchanged_when_userinstalled_fails(self):
@@ -400,6 +409,95 @@ class UserInstalledTest(unittest.TestCase):
         m = {("a", "0", "1", "1", "x"): "anaconda", ("a", "0", "2", "1", "x"): "baseos",
              ("b", "0", "1", "1", "x"): "baseos"}
         self.assertEqual(check.os_names_from_repo(m), frozenset({"a"}))
+
+
+class StalenessCheckTest(unittest.TestCase):
+    def test_key_order_and_values(self):
+        r = check.collect(FakeSystem())
+        st = r["checks"]["staleness"]
+        self.assertEqual(list(st), ["security_updates", "reboot", "last_update"])
+        self.assertEqual(
+            list(st["security_updates"]), ["status", "total", "by_severity", "packages"]
+        )
+        self.assertEqual(
+            list(st["reboot"]), ["status", "running_kernel", "latest_kernel"]
+        )
+        self.assertEqual(list(st["last_update"]), ["status", "at", "days_ago"])
+        self.assertEqual(st["reboot"]["running_kernel"], r["system"]["running_kernel"])
+        self.assertEqual(st["last_update"]["at"], "2026-11-20T10:00:00Z")
+        self.assertEqual(r["schema_version"], 1)
+
+    def test_notices_when_ok(self):
+        r = check.collect(FakeSystem())
+        ids = notice_ids(r)
+        self.assertIn("security_updates_cache", ids)
+        for i in ("security_updates_unavailable", "reboot_unknown",
+                  "last_update_unavailable"):
+            self.assertNotIn(i, ids)
+
+    def test_zero_security_still_has_cache_notice(self):
+        data = dict(recorded.SECURITY_DEFAULT)
+        data[None] = ""
+        r = check.collect(FakeSystem(security=data))
+        self.assertEqual(r["checks"]["staleness"]["security_updates"]["total"], 0)
+        self.assertIn("security_updates_cache", notice_ids(r))
+
+    def test_security_unavailable(self):
+        data = dict(recorded.SECURITY_DEFAULT)
+        data[None] = CommandError("exit_status", returncode=1,
+                                  stderr_tail="SECRETLIKE-TEXT")
+        base = check.collect(FakeSystem())
+        r = check.collect(FakeSystem(security=data))
+        self.assertEqual(
+            r["checks"]["staleness"]["security_updates"]["status"], "unavailable"
+        )
+        ids = notice_ids(r)
+        self.assertIn("security_updates_unavailable", ids)
+        self.assertNotIn("security_updates_cache", ids)
+        msg = next(n["message"] for n in r["notices"]
+                   if n["id"] == "security_updates_unavailable")
+        self.assertIn("dnf が終了コード 1 で終わった", msg)
+        self.assertNotIn("SECRETLIKE-TEXT", repr(r))
+        self.assertEqual(r["checks"]["focus_packages"], base["checks"]["focus_packages"])
+        self.assertEqual(r["checks"]["user_installed"], base["checks"]["user_installed"])
+        self.assertEqual(r["checks"]["staleness"]["reboot"], base["checks"]["staleness"]["reboot"])
+
+    def test_reboot_unknown(self):
+        r = check.collect(FakeSystem(kernel=None))
+        self.assertEqual(r["checks"]["staleness"]["reboot"]["status"], "unknown")
+        self.assertIn("reboot_unknown", notice_ids(r))
+        self.assertIn("running_kernel_not_found", notice_ids(r))
+
+    def test_last_update_unavailable_and_none(self):
+        r = check.collect(FakeSystem(last_upgrade=history.HistoryError("busy")))
+        self.assertEqual(r["checks"]["staleness"]["last_update"]["status"], "unavailable")
+        self.assertIn("last_update_unavailable", notice_ids(r))
+        msg = next(n["message"] for n in r["notices"]
+                   if n["id"] == "last_update_unavailable")
+        self.assertIn(history.reason_text("busy"), msg)
+        r = check.collect(FakeSystem(last_upgrade=None))
+        self.assertEqual(r["checks"]["staleness"]["last_update"]["status"], "none")
+        self.assertNotIn("last_update_unavailable", notice_ids(r))
+
+    def test_notice_order(self):
+        data = dict(recorded.SECURITY_DEFAULT)
+        data[None] = CommandError("timeout")
+        r = check.collect(
+            FakeSystem(security=data, kernel=None,
+                       last_upgrade=history.HistoryError("busy"),
+                       userinstalled=CommandError("not_found"))
+        )
+        self.assertEqual(
+            notice_ids(r)[-5:],
+            ["running_kernel_not_found", "user_installed_unavailable",
+             "security_updates_unavailable", "reboot_unknown",
+             "last_update_unavailable"],
+        )
+
+    def test_user_installed_not_changed_by_staleness(self):
+        a = check.collect(FakeSystem())["checks"]["user_installed"]
+        b = check.collect(FakeSystem(last_upgrade=None))["checks"]["user_installed"]
+        self.assertEqual(a, b)
 
 
 class ErrorTest(unittest.TestCase):

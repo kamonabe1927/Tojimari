@@ -110,7 +110,9 @@ class RenderTest(unittest.TestCase):
         idx = self.lines.index("[注意]")
         notes = self.lines[idx + 1 : -1]
         self.assertEqual(
-            notes, ["- " + notices.SCOPE, "- " + notices.RUNNING_IS_SNAPSHOT]
+            notes,
+            ["- " + notices.SCOPE, "- " + notices.RUNNING_IS_SNAPSHOT,
+             "- " + notices.SECURITY_UPDATES_CACHE],
         )
 
     def test_notes_all(self):
@@ -274,6 +276,7 @@ class UserInstalledTableTest(unittest.TestCase):
     def test_focus_section_unchanged(self):
         r = copy.deepcopy(self.report)
         del r["checks"]["user_installed"]
+        del r["checks"]["staleness"]
         old = table.render_table(r)
         a = old.split("[注意]")[0].rstrip("\n")
         self.assertTrue(self.text.startswith(a))
@@ -282,6 +285,163 @@ class UserInstalledTableTest(unittest.TestCase):
 def recorded_error():
     from tojimari.history import HistoryError
     return HistoryError("not_found")
+
+
+def stale_section(text):
+    lines = text.split("\n")
+    i = lines.index("[古さ]")
+    end = len(lines)
+    for j in range(i + 1, len(lines)):
+        if lines[j] == "":
+            end = j
+            break
+    return lines[i:end]
+
+
+def stale_report(**parts):
+    r = report()
+    r["checks"]["staleness"] = {
+        "security_updates": {
+            "status": "ok", "total": 2,
+            "by_severity": {"critical": 0, "important": 1, "moderate": 1,
+                            "low": 0, "unspecified": 0},
+            "packages": [{"name": "openssl-libs", "severity": "important"},
+                         {"name": "vim-enhanced", "severity": "moderate"}],
+        },
+        "reboot": {"status": "pending",
+                   "running_kernel": "6.12.0-50.el10.aarch64",
+                   "latest_kernel": "6.12.0-55.el10.aarch64"},
+        "last_update": {"status": "ok", "at": "2026-11-20T10:00:00Z", "days_ago": 2},
+    }
+    r["checks"]["staleness"].update(parts)
+    return r
+
+
+class StalenessTableTest(unittest.TestCase):
+    def test_example_from_spec(self):
+        text = table.render_table(stale_report())
+        self.assertEqual(
+            stale_section(text),
+            [
+                "[古さ]",
+                "セキュリティ更新    2 件（Critical 0、Important 1、Moderate 1、Low 0、重要度なし 0）",
+                "  openssl-libs      Important",
+                "  vim-enhanced      Moderate",
+                "再起動待ち          再起動待ち（動いている 6.12.0-50.el10.aarch64、入っている最新 6.12.0-55.el10.aarch64）",
+                "最後に更新した日    2026-11-20 10:00 UTC（2 日前）",
+            ],
+        )
+
+    def test_position(self):
+        lines = table.render_table(report()).split("\n")
+        i = lines.index("[古さ]")
+        ui = next(n for n, l in enumerate(lines) if l.startswith("[後から入れたもの]"))
+        self.assertGreater(i, ui)
+        self.assertLess(i, lines.index("[注意]"))
+        self.assertEqual(lines[i - 1], "")
+        self.assertEqual(lines[lines.index("[注意]") - 1], "")
+
+    def test_default_report_content(self):
+        sec = stale_section(table.render_table(report()))
+        self.assertIn("3 件（Critical 0、Important 1、Moderate 1、Low 0、重要度なし 1）", sec[1])
+        self.assertEqual([l.split()[0] for l in sec[2:5]], ["openssl-libs", "git", "bash"])
+        self.assertTrue(sec[2].endswith("Important"))
+        self.assertTrue(sec[4].endswith("重要度なし"))
+        self.assertIn("再起動待ちではない（動いている 6.12.0-55.el10.aarch64、入っている最新 6.12.0-55.el10.aarch64）", sec[5])
+        self.assertTrue(sec[6].endswith("2026-11-20 10:00 UTC（0 日前）"))
+
+    def test_no_trailing_spaces_and_aligned(self):
+        text = table.render_table(
+            stale_report(security_updates={
+                "status": "ok", "total": 1,
+                "by_severity": {"critical": 0, "important": 0, "moderate": 0,
+                                "low": 1, "unspecified": 0},
+                "packages": [{"name": "a-very-long-package-name-for-width", "severity": "low"}],
+            })
+        )
+        sec = stale_section(text)
+        for line in sec:
+            self.assertEqual(line, line.rstrip())
+        cols = {table.display_width(l[: l.index(v)]) for l, v in
+                ((sec[1], "1 件"), (sec[2], "Low"), (sec[3], "再起動待ち（"),
+                 (sec[4], "2026-"))}
+        self.assertEqual(len(cols), 1)
+        self.assertGreaterEqual(cols.pop(), len("  a-very-long-package-name-for-width") + 4)
+
+    def test_zero(self):
+        sec = stale_section(table.render_table(stale_report(security_updates={
+            "status": "ok", "total": 0,
+            "by_severity": {k: 0 for k in ("critical", "important", "moderate", "low", "unspecified")},
+            "packages": []})))
+        self.assertEqual(sec[1], "セキュリティ更新    0 件")
+        self.assertEqual(len(sec), 4)
+
+    def test_unavailable(self):
+        text = table.render_table(stale_report(
+            security_updates={"status": "unavailable", "total": None,
+                              "by_severity": None, "packages": []},
+            last_update={"status": "unavailable", "at": None, "days_ago": None},
+        ))
+        sec = stale_section(text)
+        self.assertEqual(sec[1], "セキュリティ更新    確認できませんでした")
+        self.assertEqual(sec[3], "最後に更新した日    確認できませんでした")
+        self.assertNotIn("0 件", "\n".join(sec))
+        self.assertNotIn("更新なし", "\n".join(sec))
+
+    def test_unknown_status_values(self):
+        sec = stale_section(table.render_table(stale_report(
+            security_updates={"status": "zzz", "total": 5, "by_severity": {}, "packages": [{"name": "x", "severity": "low"}]},
+            reboot={"status": "zzz", "running_kernel": None, "latest_kernel": None},
+            last_update={"status": "zzz", "at": None, "days_ago": None},
+        )))
+        self.assertEqual(sec[1], "セキュリティ更新    確認できませんでした")
+        self.assertEqual(sec[2], "再起動待ち          確認できませんでした（動いている -、入っている最新 -）")
+        self.assertEqual(sec[3], "最後に更新した日    確認できませんでした")
+
+    def test_reboot_states(self):
+        for status, label in (("not_pending", "再起動待ちではない"), ("unknown", "確認できませんでした")):
+            with self.subTest(status=status):
+                sec = stale_section(table.render_table(stale_report(
+                    reboot={"status": status, "running_kernel": "k1", "latest_kernel": None})))
+                self.assertIn(f"{label}（動いている k1、入っている最新 -）", sec[4])
+
+    def test_last_update_none(self):
+        sec = stale_section(table.render_table(stale_report(
+            last_update={"status": "none", "at": None, "days_ago": None})))
+        self.assertEqual(sec[-1], "最後に更新した日    更新の記録がありません")
+
+    def test_unknown_severity_shown_as_is(self):
+        sec = stale_section(table.render_table(stale_report(security_updates={
+            "status": "ok", "total": 1,
+            "by_severity": {"critical": 0, "important": 0, "moderate": 0, "low": 0, "unspecified": 0},
+            "packages": [{"name": "x", "severity": "weird"}]})))
+        self.assertTrue(sec[2].endswith("weird"))
+
+    def test_missing_staleness_prints_nothing(self):
+        r = report()
+        del r["checks"]["staleness"]
+        text = table.render_table(r)
+        self.assertNotIn("[古さ]", text)
+        self.assertIn("[注意]", text)
+
+    def test_missing_items_skipped(self):
+        r = report()
+        r["checks"]["staleness"] = {"reboot": r["checks"]["staleness"]["reboot"]}
+        sec = stale_section(table.render_table(r))
+        self.assertEqual(len(sec), 2)
+        self.assertTrue(sec[1].startswith("再起動待ち"))
+
+    def test_only_report_content(self):
+        r = stale_report()
+        r["checks"]["staleness"]["security_updates"]["total"] = 9  # 数え直さない
+        self.assertIn("9 件（", table.render_table(r))
+
+    def test_existing_parts_unchanged(self):
+        r = report()
+        del r["checks"]["staleness"]
+        old = table.render_table(r)
+        new = table.render_table(report())
+        self.assertTrue(new.startswith(old.split("[注意]")[0].rstrip("\n")))
 
 
 class NoGuaranteeWordsTest(unittest.TestCase):
@@ -295,6 +455,10 @@ class NoGuaranteeWordsTest(unittest.TestCase):
         texts.append(table.render_table(r2))
         texts.append(table.render_table(r))
         texts.append(table.render_table(report()))
+        r3 = report(security={None: CommandError("timeout")}, kernel=None,
+                    last_upgrade=recorded_error())
+        texts += [n["message"] for n in r3["notices"]]
+        texts.append(table.render_table(r3))
         for t in texts:
             for w in self.WORDS:
                 self.assertNotIn(w, t)

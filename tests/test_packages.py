@@ -51,6 +51,77 @@ class ArgvTest(unittest.TestCase):
         self.assertTrue(argv[0].startswith("/"))
 
 
+class SecurityArgvTest(unittest.TestCase):
+    def test_security(self):
+        argv = packages.dnf_security_upgrades_argv(None)
+        self.assertEqual(
+            argv,
+            ["/usr/bin/dnf", "repoquery", "--upgrades", "--cacheonly", "--quiet",
+             "--setopt=*.skip_if_unavailable=0", "--security",
+             "--queryformat", "%{name}\n"],
+        )
+        self.assertTrue(argv[0].startswith("/"))
+        self.assertFalse([a for a in argv if a.startswith("--sec-severity")])
+
+    def test_severity(self):
+        for sev in packages.SEVERITIES:
+            with self.subTest(sev=sev):
+                argv = packages.dnf_security_upgrades_argv(sev)
+                self.assertIn(f"--sec-severity={sev}", argv)
+                self.assertNotIn("--security", argv)
+                for opt in ("--upgrades", "--cacheonly", "--quiet",
+                            "--setopt=*.skip_if_unavailable=0"):
+                    self.assertIn(opt, argv)
+                self.assertEqual(argv[-2:], ["--queryformat", "%{name}\n"])
+
+    def test_severities_order(self):
+        self.assertEqual(
+            packages.SEVERITIES, ("Critical", "Important", "Moderate", "Low")
+        )
+
+    def test_unknown_severity(self):
+        for bad in ("critical", "LOW", "", "Urgent", "Low --security"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    packages.dnf_security_upgrades_argv(bad)
+
+    def test_existing_argv_unchanged(self):
+        self.assertEqual(
+            packages.DNF_USERINSTALLED_ARGV[:3],
+            ["/usr/bin/dnf", "repoquery", "--userinstalled"],
+        )
+        self.assertNotIn("--setopt=*.skip_if_unavailable=0", packages.DNF_USERINSTALLED_ARGV)
+
+
+class ParseNamesTest(unittest.TestCase):
+    def test_blank_lines_and_duplicates(self):
+        self.assertEqual(
+            packages.parse_dnf_names("git\n\ngit\nopenssl-libs\n"),
+            frozenset({"git", "openssl-libs"}),
+        )
+
+    def test_empty(self):
+        self.assertEqual(packages.parse_dnf_names(""), frozenset())
+        self.assertEqual(packages.parse_dnf_names("\n\n"), frozenset())
+
+    def test_names_with_symbols(self):
+        self.assertEqual(
+            packages.parse_dnf_names("libstdc++\npython3.12-foo_bar\n"),
+            frozenset({"libstdc++", "python3.12-foo_bar"}),
+        )
+
+    def test_bad_lines(self):
+        for bad in ("a b\n", "a\tb\n", "a:b\n", "-x\n", " git\n", "git \n",
+                    "Last metadata expiration check: 0:01:00 ago\n", ".x\n"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ParseError):
+                    packages.parse_dnf_names(bad)
+
+    def test_one_bad_line_fails_all(self):
+        with self.assertRaises(ParseError):
+            packages.parse_dnf_names("git\nbad name\nbash\n")
+
+
 class ParseRpmTest(unittest.TestCase):
     def test_all_installed(self):
         pkgs = packages.parse_rpm_list(recorded.RPM_ALL_INSTALLED)

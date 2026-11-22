@@ -234,6 +234,32 @@ class ReadHistoryDbTest(unittest.TestCase):
         self.assertTrue(m.call_args.kwargs.get("uri"))
 
 
+class ReadLastUpgradeTest(unittest.TestCase):
+    def test_read_and_directory_unchanged(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "history.sqlite")
+            conn = sqlite3.connect(path)
+            recorded.make_upgrade_history_db(
+                conn, {1: (10, 20, 1, [6, 7]), 2: (30, 40, 1, [1])}
+            )
+            conn.close()
+            before = sorted(os.listdir(d))
+            self.assertEqual(read_history_db(path, history.query_last_upgrade), 20)
+            self.assertEqual(sorted(os.listdir(d)), before)
+
+    def test_missing_columns_through_runner(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "history.sqlite")
+            conn = sqlite3.connect(path)
+            recorded.make_history_db(conn, {1: ["bash"]})
+            conn.execute("ALTER TABLE trans DROP COLUMN state")
+            conn.commit()
+            conn.close()
+            with self.assertRaises(HistoryError) as cm:
+                read_history_db(path, history.query_last_upgrade)
+            self.assertEqual(cm.exception.kind, "missing_columns")
+
+
 class SystemHistoryTest(unittest.TestCase):
     def test_uses_fixed_path(self):
         with mock.patch.object(runner, "read_history_db", return_value=frozenset()) as m:

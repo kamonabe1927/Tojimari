@@ -1,5 +1,6 @@
 """読み取り部。rpm と dnf の問い合わせの形と、その出力の読み取り。何も実行しない。"""
 
+import re
 from dataclasses import dataclass
 
 RPM_LIST_ARGV = [
@@ -31,6 +32,34 @@ DNF_USERINSTALLED_ARGV = _dnf_repoquery_argv("--userinstalled")
 
 def dnf_from_repo_argv(names: list[str]) -> list[str]:
     return [*_dnf_repoquery_argv("--installed"), *names]
+
+
+SEVERITIES = ("Critical", "Important", "Moderate", "Low")  # dnf に渡す書き方。重い順
+
+_NAME_QUERYFORMAT = "%{name}\n"
+_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+
+
+def dnf_security_upgrades_argv(severity: str | None) -> list[str]:
+    """None なら --security、SEVERITIES の値なら --sec-severity=<値>。それ以外は ValueError。
+    --security と --sec-severity は同じ呼び出しに入れない。"""
+    if severity is None:
+        selector = "--security"
+    elif severity in SEVERITIES:
+        selector = f"--sec-severity={severity}"
+    else:
+        raise ValueError("知らない重要度")
+    return [
+        "/usr/bin/dnf",
+        "repoquery",
+        "--upgrades",
+        "--cacheonly",
+        "--quiet",
+        "--setopt=*.skip_if_unavailable=0",
+        selector,
+        "--queryformat",
+        _NAME_QUERYFORMAT,
+    ]
 
 
 class ParseError(Exception):
@@ -103,3 +132,16 @@ def version_entry(pkg: PackageVersion, from_repo: str | None) -> dict:
         "evr": format_evr(pkg),
         "from_repo": from_repo,
     }
+
+
+def parse_dnf_names(text: str) -> frozenset[str]:
+    """空行を飛ばし、名前の集まりを返す。名前の形でない行があれば ParseError。
+    0 行（空の出力）は空の集まり。"""
+    names = set()
+    for line in text.split("\n"):
+        if line == "":
+            continue
+        if _NAME_RE.fullmatch(line) is None:
+            raise ParseError("名前の形でない行がある")
+        names.add(line)
+    return frozenset(names)

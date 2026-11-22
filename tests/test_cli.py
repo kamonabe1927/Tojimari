@@ -65,6 +65,33 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(data["checks"]["user_installed"]["status"], "ok")
 
+    def test_json_has_staleness(self):
+        _, out, _ = run(["check", "--json"])
+        data = json.loads(out)
+        self.assertEqual(
+            list(data["checks"]), ["focus_packages", "user_installed", "staleness"]
+        )
+        self.assertEqual(
+            data["checks"]["staleness"],
+            check.collect(FakeSystem())["checks"]["staleness"],
+        )
+
+    def test_table_has_staleness(self):
+        _, out, _ = run(["check"])
+        self.assertIn("[古さ]", out)
+
+    def test_security_failure_still_zero(self):
+        for argv in (["check"], ["check", "--json"]):
+            code, out, _ = run(argv, FakeSystem(security={None: CommandError("timeout")}))
+            self.assertEqual(code, 0)
+            self.assertIn("確認できませんでした" if argv == ["check"] else "security_updates_unavailable", out)
+
+    def test_last_update_failure_still_zero(self):
+        from tojimari.history import HistoryError
+        code, out, _ = run(["check", "--json"], FakeSystem(last_upgrade=HistoryError("busy")))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["checks"]["staleness"]["last_update"]["status"], "unavailable")
+
     def test_history_failure_still_zero(self):
         from tojimari.history import HistoryError
         code, out, _ = run(["check", "--json"], FakeSystem(history=HistoryError("busy")))
