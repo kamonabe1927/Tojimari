@@ -107,6 +107,49 @@ class CliTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("確認できませんでした" if argv == ["check"] else "user_installed_unavailable", out)
 
+    @staticmethod
+    def bad_chars(text):
+        return [
+            c for c in text if c != "\n" and (ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F)
+        ]
+
+    def test_stderr_controls_replaced(self):
+        tail = "error: \x1b[31mdb\r\x08\x9b\n" + "y" * 250
+        for argv in (["check"], ["check", "--json"]):
+            with self.subTest(argv=argv):
+                err = CommandError("exit_status", returncode=1, stderr_tail=tail)
+                code, out, errtext = run(argv, FakeSystem(rpm=err))
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertEqual(self.bad_chars(errtext), [])
+                lines = errtext.split("\n")
+                self.assertEqual(
+                    lines[0], "tojimari: rpm の問い合わせが終了コード 1 で失敗しました"
+                )
+                self.assertEqual(lines[1], "error: \\x1b[31mdb\\x0d\\x08\\x9b")
+                self.assertIn("...（残り 50 文字を省略）", lines[2])
+
+    def noisy_system(self):
+        return FakeSystem(
+            kernel="6.12.0-55.el10.aarch64\x1b[2J",
+            dnf=recorded.DNF_ALL.replace("baseos", "base\x1b[31mos"),
+        )
+
+    def test_json_not_rewritten(self):
+        code, out, err = run(["check", "--json"], self.noisy_system())
+        self.assertEqual(code, 0)
+        want = json.dumps(check.collect(self.noisy_system()), ensure_ascii=False, indent=2) + "\n"
+        self.assertEqual(out, want)
+        self.assertEqual(json.loads(out)["system"]["running_kernel"],
+                         "6.12.0-55.el10.aarch64\x1b[2J")
+
+    def test_table_controls_replaced(self):
+        code, out, err = run(["check"], self.noisy_system())
+        self.assertEqual(code, 0)
+        self.assertEqual(self.bad_chars(out), [])
+        line = [l for l in out.split("\n") if l.startswith("動いているカーネル:")][0]
+        self.assertIn("\\x1b[2J", line)
+
     def test_bad_args(self):
         for argv in ([], ["unknown"], ["check", "--unknown"]):
             with self.subTest(argv=argv):

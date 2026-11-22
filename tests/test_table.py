@@ -464,6 +464,83 @@ class NoGuaranteeWordsTest(unittest.TestCase):
                 self.assertNotIn(w, t)
 
 
+class ControlReplaceTest(unittest.TestCase):
+    NOISE = "\x1b[31m\n\r\t\x08\x7f\x9b"
+
+    def noisy_report(self):
+        r = copy.deepcopy(report())
+        n = self.NOISE
+        kernel = r["checks"]["focus_packages"]["packages"][0]["installed"][1]
+        kernel["evr"] += n
+        kernel["arch"] += n
+        kernel["from_repo"] += n
+        sshd = r["checks"]["focus_packages"]["packages"][1]["installed"][0]
+        sshd["evr"] += n
+        r["system"]["running_kernel"] += n
+        for v in r["checks"]["user_installed"]["packages"][:2]:
+            v["name"] += n
+            v["evr"] += n
+            v["arch"] += n
+            v["from_repo"] += n
+        stale = r["checks"]["staleness"]
+        stale["security_updates"]["packages"][0]["name"] += n
+        stale["security_updates"]["packages"][0]["severity"] = "odd" + n
+        stale["reboot"] = {
+            "status": "pending",
+            "running_kernel": "6.12.0-50.el10.aarch64" + n,
+            "latest_kernel": "6.12.0-55.el10.aarch64" + n,
+        }
+        r["notices"][1]["message"] += n
+        return r
+
+    @staticmethod
+    def bad_chars(text):
+        return [
+            c for c in text if c != "\n" and (ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F)
+        ]
+
+    def test_no_control_chars(self):
+        out = table.render_table(self.noisy_report())
+        self.assertEqual(self.bad_chars(out), [])
+        self.assertIn("\\x1b[31m", out)
+        self.assertIn("\\x0a", out)
+        self.assertIn("\\x9b", out)
+
+    def test_line_count_unchanged(self):
+        plain = table.render_table(report())
+        noisy = table.render_table(self.noisy_report())
+        self.assertEqual(len(noisy.split("\n")), len(plain.split("\n")))
+
+    def test_kernel_line_has_replaced_form(self):
+        out = table.render_table(self.noisy_report())
+        line = [l for l in out.split("\n") if l.startswith("動いているカーネル")][0]
+        self.assertIn("\\x1b[31m", line)
+
+    def test_columns_aligned(self):
+        lines = table.render_table(self.noisy_report()).split("\n")
+        for title, first in (("[重点リスト]", "パッケージ"), ("[後から入れたもの]", "パッケージ")):
+            start = next(i for i, l in enumerate(lines) if l.startswith(title)) + 1
+            header = lines[start]
+            want = table.display_width(header[: header.index("アーキ")])
+            rows = []
+            for l in lines[start + 1 :]:
+                if l == "" or l.startswith("動いているカーネル"):
+                    break
+                rows.append(l)
+            self.assertTrue(rows)
+            for l in rows:
+                if "aarch64" not in l:
+                    continue
+                self.assertEqual(table.display_width(l[: l.index("aarch64")]), want, l)
+        self.assertTrue(any("\\x" in l and "aarch64\\x1b" in l for l in lines))
+
+    def test_input_not_modified(self):
+        r = self.noisy_report()
+        before = copy.deepcopy(r)
+        table.render_table(r)
+        self.assertEqual(r, before)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -543,6 +543,37 @@ class ErrorTest(unittest.TestCase):
         msg = self.rpm_message(CommandError("timeout", timeout=30, stderr_tail="error: db"))
         self.assertEqual(msg, "rpm の問い合わせが 30 秒で終わりませんでした\nerror: db")
 
+    def test_rpm_stderr_tail_controls_replaced(self):
+        msg = self.rpm_message(
+            CommandError("exit_status", returncode=1, stderr_tail="error: \x1b[31mdb\r\x08")
+        )
+        lines = msg.split("\n")
+        self.assertEqual(lines[0], "rpm の問い合わせが終了コード 1 で失敗しました")
+        self.assertEqual(lines[1], "error: \\x1b[31mdb\\x0d\\x08")
+        self.assertEqual(len(lines), 2)
+
+    def test_rpm_stderr_tail_five_lines(self):
+        tail = "\n".join(f"l{i}\r" for i in range(5))
+        msg = self.rpm_message(CommandError("exit_status", returncode=1, stderr_tail=tail))
+        self.assertEqual(len(msg.split("\n")), 6)
+
+    def test_rpm_stderr_tail_long_line_clipped(self):
+        tail = "short\n" + "x" * 201
+        msg = self.rpm_message(CommandError("exit_status", returncode=1, stderr_tail=tail))
+        lines = msg.split("\n")
+        self.assertEqual(lines[1], "short")
+        self.assertEqual(lines[2], "x" * 200 + " ...（残り 1 文字を省略）")
+        self.assertEqual(lines[0], "rpm の問い合わせが終了コード 1 で失敗しました")
+
+    def test_rpm_timeout_stderr_tail_controls_replaced(self):
+        msg = self.rpm_message(
+            CommandError("timeout", timeout=30, stderr_tail="error: \x1b[31mdb\r\x08")
+        )
+        self.assertEqual(
+            msg,
+            "rpm の問い合わせが 30 秒で終わりませんでした\nerror: \\x1b[31mdb\\x0d\\x08",
+        )
+
     def test_rpm_parse_error(self):
         for text in (recorded.RPM_MALFORMED, ""):
             with self.assertRaises(CheckError):
