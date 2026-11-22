@@ -15,11 +15,12 @@ DNF_TIMEOUT = 60
 class CommandError(Exception):
     """外部コマンドを実行できなかった、または失敗した。"""
 
-    def __init__(self, kind, returncode=None, stderr_tail=""):
+    def __init__(self, kind, returncode=None, stderr_tail="", timeout=None):
         super().__init__(kind)
         self.kind = kind  # "not_found" | "timeout" | "exit_status" | "os_error"
         self.returncode = returncode  # kind が "exit_status" のときだけ入る
         self.stderr_tail = stderr_tail  # 標準エラー出力の末尾（最大 5 行）
+        self.timeout = timeout  # kind が "timeout" のときだけ入る（秒）
 
 
 def _tail(data) -> str:
@@ -46,7 +47,9 @@ def run_command(argv: list[str], timeout: float) -> str:
     except FileNotFoundError:
         raise CommandError("not_found") from None
     except subprocess.TimeoutExpired as exc:
-        raise CommandError("timeout", stderr_tail=_tail(exc.stderr)) from None
+        raise CommandError(
+            "timeout", stderr_tail=_tail(exc.stderr), timeout=timeout
+        ) from None
     except OSError:
         raise CommandError("os_error") from None
     if proc.returncode != 0:

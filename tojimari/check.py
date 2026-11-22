@@ -29,7 +29,10 @@ def _rpm_failure_message(err: CommandError) -> str:
     if err.kind == "not_found":
         msg = "rpm コマンドが見つかりません"
     elif err.kind == "timeout":
-        msg = "rpm の問い合わせが 30 秒で終わりませんでした"
+        if err.timeout is None:
+            msg = "rpm の問い合わせが時間内に終わりませんでした"
+        else:
+            msg = f"rpm の問い合わせが {err.timeout} 秒で終わりませんでした"
     elif err.kind == "exit_status":
         msg = f"rpm の問い合わせが終了コード {err.returncode} で失敗しました"
     else:
@@ -115,7 +118,7 @@ def _collect_user_installed(system, installed):
     try:
         userinstalled = packages.parse_dnf_from_repo(system.dnf_userinstalled())
     except CommandError as err:
-        list_problem = notices.command_reason("dnf", 60, err)
+        list_problem = notices.command_reason("dnf", err)
     if userinstalled is not None:
         if not userinstalled:
             userinstalled = None
@@ -158,7 +161,7 @@ def _collect_running(system) -> tuple[dict | None, dict, str | None]:
             system.rpm_files(), frozenset(path for path, _ in candidates)
         )
     except CommandError as err:
-        return None, dict(_RUNNING_UNAVAILABLE), notices.command_reason("rpm", 30, err)
+        return None, dict(_RUNNING_UNAVAILABLE), notices.command_reason("rpm", err)
     except packages.ParseError:
         return None, dict(_RUNNING_UNAVAILABLE), _RPM_FILES_PARSE_REASON
     marks = processes.build_marks(candidates, file_map)
@@ -179,7 +182,7 @@ def collect(system) -> dict:
     try:
         from_repo_map = packages.parse_dnf_from_repo(system.dnf_from_repo(names))
     except CommandError as err:
-        problem = notices.command_reason("dnf", 60, err)
+        problem = notices.command_reason("dnf", err)
 
     running_kernel = system.running_kernel()
     is_root = system.is_root()

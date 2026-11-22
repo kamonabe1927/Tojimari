@@ -40,16 +40,40 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(cm.exception.kind, "exit_status")
         self.assertEqual(cm.exception.returncode, 3)
         self.assertEqual(cm.exception.stderr_tail, "3\n4\n5\n6\n7")
+        self.assertIsNone(cm.exception.timeout)
 
     def test_not_found(self):
         with self.assertRaises(CommandError) as cm:
             run_command(["/nonexistent/tojimari-test-command"], 10)
         self.assertEqual(cm.exception.kind, "not_found")
+        self.assertIsNone(cm.exception.timeout)
+
+    def test_os_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(CommandError) as cm:
+                run_command([d], 10)
+        self.assertEqual(cm.exception.kind, "os_error")
+        self.assertIsNone(cm.exception.returncode)
+        self.assertIsNone(cm.exception.timeout)
+        self.assertEqual(cm.exception.stderr_tail, "")
 
     def test_timeout(self):
         with self.assertRaises(CommandError) as cm:
             run_command(py("import time; time.sleep(5)"), 0.3)
         self.assertEqual(cm.exception.kind, "timeout")
+
+    def test_timeout_details(self):
+        code = (
+            "import sys, time; "
+            "sys.stderr.write(''.join(f'{i}\\n' for i in range(1, 8))); "
+            "sys.stderr.flush(); time.sleep(30)"
+        )
+        with self.assertRaises(CommandError) as cm:
+            run_command(py(code), 1)
+        self.assertEqual(cm.exception.kind, "timeout")
+        self.assertEqual(cm.exception.timeout, 1)
+        self.assertEqual(cm.exception.stderr_tail, "3\n4\n5\n6\n7")
+        self.assertIsNone(cm.exception.returncode)
 
     def test_stdin_closed(self):
         out = run_command(py("import sys; print(repr(sys.stdin.read()))"), 10)
@@ -62,6 +86,38 @@ class SystemTest(unittest.TestCase):
         self.assertIsInstance(s.is_root(), bool)
         self.assertIsNotNone(s.now().tzinfo)
         self.assertIsInstance(s.running_kernel(), (str, type(None)))
+
+    def test_timeout_constants(self):
+        self.assertEqual(runner.RPM_TIMEOUT, 30)
+        self.assertEqual(runner.DNF_TIMEOUT, 60)
+
+    def test_rpm_list(self):
+        with mock.patch.object(runner, "run_command", return_value="out") as m:
+            self.assertEqual(System().rpm_list(), "out")
+        m.assert_called_once_with(packages.RPM_LIST_ARGV, runner.RPM_TIMEOUT)
+
+    def test_dnf_from_repo(self):
+        for names in (["sudo", "glibc"], ("sudo", "glibc")):
+            with self.subTest(type=type(names).__name__):
+                with mock.patch.object(runner, "run_command", return_value="out") as m:
+                    self.assertEqual(System().dnf_from_repo(names), "out")
+                argv = packages.dnf_from_repo_argv(["sudo", "glibc"])
+                m.assert_called_once_with(argv, runner.DNF_TIMEOUT)
+                self.assertIn("sudo", argv)
+                self.assertIn("glibc", argv)
+
+    def test_dnf_security_upgrades(self):
+        for severity in (None, "Critical"):
+            with self.subTest(severity=severity):
+                with mock.patch.object(runner, "run_command", return_value="out") as m:
+                    if severity is None:
+                        result = System().dnf_security_upgrades()
+                    else:
+                        result = System().dnf_security_upgrades(severity)
+                self.assertEqual(result, "out")
+                m.assert_called_once_with(
+                    packages.dnf_security_upgrades_argv(severity), runner.DNF_TIMEOUT
+                )
 
 
 def make_db(directory, name="history.sqlite", wal=False, transactions=None):

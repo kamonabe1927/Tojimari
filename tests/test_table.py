@@ -450,12 +450,12 @@ class NoGuaranteeWordsTest(unittest.TestCase):
     def test_words_absent(self):
         r = report(root=False, dnf=CommandError("not_found"), kernel=None)
         texts = [n["message"] for n in r["notices"]]
-        r2 = report(history=recorded_error(), userinstalled=CommandError("timeout"))
+        r2 = report(history=recorded_error(), userinstalled=CommandError("timeout", timeout=60))
         texts += [n["message"] for n in r2["notices"]]
         texts.append(table.render_table(r2))
         texts.append(table.render_table(r))
         texts.append(table.render_table(report()))
-        r3 = report(security={None: CommandError("timeout")}, kernel=None,
+        r3 = report(security={None: CommandError("timeout", timeout=60)}, kernel=None,
                     last_upgrade=recorded_error())
         texts += [n["message"] for n in r3["notices"]]
         texts.append(table.render_table(r3))
