@@ -34,7 +34,7 @@ class ReplaceControlsTest(unittest.TestCase):
                 self.assertEqual(display.replace_controls(raw), want)
 
     def test_boundaries_unchanged(self):
-        for text in (" ", "~", " "):
+        for text in (" ", "~", "\xa0"):
             with self.subTest(text=text):
                 self.assertEqual(display.replace_controls(text), text)
 
@@ -44,9 +44,9 @@ class ReplaceControlsTest(unittest.TestCase):
             "plain-text_1.2",
             "a\\b",
             "\\x1b",
-            "‮",
-            " ",
-            " ",
+            "\u202e",
+            "\u2028",
+            "\u2029",
             "",
         ):
             with self.subTest(text=text):
