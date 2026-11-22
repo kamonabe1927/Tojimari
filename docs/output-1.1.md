@@ -164,7 +164,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 | `reboot_unknown` | `checks.staleness.reboot.status` が `unknown` のとき（2.7） | 再起動待ちかどうかを確認できなかった。「再起動待ちではない」という意味ではない。理由の要約を含める |
 | `last_update_unavailable` | `checks.staleness.last_update.status` が `unavailable` のとき（2.7） | dnf 履歴から最後に更新した日を確認できなかった。理由の要約を含める |
 | `running_unavailable` | `checks.running_processes.status` が `unavailable` のとき（2.8） | 動いているプロセスを確認できなかったため、今動いているかの印を付けていない。「どれも動いていない」という意味ではない。理由の要約を含める |
-| `running_partial` | `checks.running_processes.unreadable` が 1 以上のとき（2.8） | N 個のプロセスは権限が無くて実行ファイルを読めなかったため、印のもとにしていない。印の無い版の中にも、動いているものがありうる |
+| `running_partial` | `checks.running_processes.unreadable` が 1 以上のとき（2.8） | N 個のプロセスは権限が無くて実行ファイルかルートディレクトリを読めなかったため、印のもとにしていない。印の無い版の中にも、動いているものがありうる |
 
 - `scope`、`running_is_snapshot`、`not_root`、`history_fallback` は spec-1.1.md の「3. 表示の注意」にあたる
 - `running_is_snapshot` は、#5 で今動いているかの印をまだ出さなかったときから出している（spec-1.1.md の 3 が「出力に必ず含める」としているため）
@@ -295,11 +295,12 @@ issue #14 で決めた。取り方と、取れないときの扱いの要件は 
 | 項目 | 型 | 内容 |
 |---|---|---|
 | `status` | 文字列 | `ok`（動いているプロセスを見回し、rpm でパッケージに結びつけられた）、`unavailable`（見回しか rpm への問い合わせができなかった） |
-| `unreadable` | 整数 または null | 権限が無くて実行ファイルを読めなかったプロセスの数。`unavailable` なら null |
+| `unreadable` | 整数 または null | 権限が無くて実行ファイルかルートディレクトリを読めなかったプロセスの数。`unavailable` なら null |
 
 - `running` の意味: その版が持つ実行ファイルのパスで、今動いているプロセスがある。更新で入れ替わった古い実行ファイルが動いているときも、今そのパスを持つ版に印が付く（更新前の中身かどうかは見分けない）
-- `systemd_service` の意味: そのプロセスのうち、システムのサービス（cgroup のパスの最後が `.service` で、利用者のセッションや利用者ごとの systemd の下ではないもの）として動いているものがある
-- 結びつけないもの: 実行ファイルの無いもの（カーネルのスレッドなど）、見回しているあいだに終わったもの、Tojimari 自身とその子プロセス、Tojimari と違うマウントの名前空間で動いているもの（Docker コンテナの中など）
+- `systemd_service` の意味: そのプロセスのうち、システムのサービス（cgroup のパスのどこかの部分が `.service` で終わり、`/user.slice` の下ではないもの。`Delegate=yes` のサービスの子の cgroup も含む）として動いているものがある
+- 結びつけないもの: 実行ファイルの無いもの（カーネルのスレッドなど）、見回しているあいだに終わったもの、Tojimari 自身とその子プロセス、Tojimari と違うルートディレクトリで動いているもの（Docker コンテナの中など）。マウントの名前空間だけが違うもの（`PrivateTmp=` などのある systemd のサービス）は結びつける
+- Tojimari の親（`sudo`）は除かない。`sudo` で実行すると、重点リストの `sudo` の版には `running` が true で出る。その瞬間に実際に動いているためで、誤りではない
 - kernel の版の `running` は、プロセスの実行ファイルではないので、いつも false（`ok` のとき）。動いているカーネルは `is_running_kernel` で見る
 - 実行ファイルのパス、pid、サービスの名前は出さない（パスに利用者の名前などが入りうるため。印に要るものだけを出す）
 - `false` は「見えた範囲で、その瞬間に動いていなかった」という意味で、「使っていない」ではない。読む側は `status` と `unreadable` を先に見る
