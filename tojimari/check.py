@@ -2,7 +2,7 @@
 
 from datetime import timezone
 
-from tojimari import history, notices, packages
+from tojimari import history, notices, packages, staleness
 from tojimari.runner import CommandError
 
 FOCUS_PACKAGES = [
@@ -23,16 +23,6 @@ _NO_RPM_MATCH_REASON = "dnf の出力が rpm の記録と突き合わなかっ�
 
 class CheckError(Exception):
     """出力そのものができない（終了コード 1 にする）。"""
-
-
-def _command_reason(tool: str, timeout: int, err: CommandError) -> str:
-    if err.kind == "not_found":
-        return f"{tool} コマンドが見つからない"
-    if err.kind == "timeout":
-        return f"{tool} が {timeout} 秒で終わらなかった"
-    if err.kind == "exit_status":
-        return f"{tool} が終了コード {err.returncode} で終わった"
-    return f"{tool} を実行できなかった"
 
 
 def _rpm_failure_message(err: CommandError) -> str:
@@ -125,7 +115,7 @@ def _collect_user_installed(system, installed):
     try:
         userinstalled = packages.parse_dnf_from_repo(system.dnf_userinstalled())
     except CommandError as err:
-        list_problem = _command_reason("dnf", 60, err)
+        list_problem = notices.command_reason("dnf", 60, err)
     if userinstalled is not None:
         if not userinstalled:
             userinstalled = None
@@ -165,7 +155,7 @@ def collect(system) -> dict:
     try:
         from_repo_map = packages.parse_dnf_from_repo(system.dnf_from_repo(names))
     except CommandError as err:
-        problem = _command_reason("dnf", 60, err)
+        problem = notices.command_reason("dnf", 60, err)
 
     running_kernel = system.running_kernel()
     is_root = system.is_root()
@@ -184,14 +174,30 @@ def collect(system) -> dict:
         system, installed
     )
 
+    staleness_checks, staleness_problems = staleness.collect(
+        system, installed, running_kernel, now
+    )
+
     return {
         "format": "tojimari-check",
         "schema_version": 1,
         "generated_at": _iso_utc(now),
         "run": {"is_root": is_root},
         "system": {"running_kernel": running_kernel},
-        "checks": {"focus_packages": focus, "user_installed": user_installed},
+        "checks": {
+            "focus_packages": focus,
+            "user_installed": user_installed,
+            "staleness": staleness_checks,
+        },
         "notices": notices.build_notices(
-            is_root, problem, running_found, history_problem, list_problem
+            is_root,
+            problem,
+            running_found,
+            history_problem,
+            list_problem,
+            security_updates_ok=staleness_checks["security_updates"]["status"] == "ok",
+            security_updates_problem=staleness_problems["security_updates"],
+            reboot_problem=staleness_problems["reboot"],
+            last_update_problem=staleness_problems["last_update"],
         ),
     }

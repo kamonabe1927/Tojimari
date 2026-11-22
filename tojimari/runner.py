@@ -117,6 +117,12 @@ class System:
     def history_first_names(self) -> frozenset[str]:
         return read_history_db(history.DB_PATH, history.query_first_transaction)
 
+    def dnf_security_upgrades(self, severity=None) -> str:
+        return run_command(packages.dnf_security_upgrades_argv(severity), DNF_TIMEOUT)
+
+    def history_last_upgrade(self):
+        return read_history_db(history.DB_PATH, history.query_last_upgrade)
+
     def running_kernel(self):
         try:
             return os.uname().release

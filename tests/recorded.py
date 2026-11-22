@@ -95,9 +95,7 @@ DNF_USERINSTALLED = (
 HISTORY_FIRST_NAMES = frozenset({"kernel", "kernel-core", "bash", "sudo"})
 
 
-def make_history_db(conn, transactions):
-    """履歴のデータベースの形（trans、trans_item、rpm、item）を作る。
-    transactions は {処理の id: [パッケージ名, ...]}。型は書かない。値はすべて架空。"""
+def _create_history_tables(conn):
     conn.execute(
         "CREATE TABLE trans (id, dt_begin, dt_end, rpmdb_version_begin, "
         "rpmdb_version_end, releasever, user_id, cmdline, state, comment)"
@@ -107,6 +105,12 @@ def make_history_db(conn, transactions):
     conn.execute(
         "CREATE TABLE trans_item (id, trans_id, item_id, repoid, action, reason, state)"
     )
+
+
+def make_history_db(conn, transactions):
+    """履歴のデータベースの形（trans、trans_item、rpm、item）を作る。
+    transactions は {処理の id: [パッケージ名, ...]}。型は書かない。値はすべて架空。"""
+    _create_history_tables(conn)
     item_id = 0
     row_id = 0
     for trans_id, names in transactions.items():
@@ -127,10 +131,46 @@ def make_history_db(conn, transactions):
     conn.commit()
 
 
+def make_upgrade_history_db(conn, transactions):
+    """処理ごとの時刻・状態と、項目ごとの action を入れた履歴のデータベースを作る。
+    transactions は {処理の id: (dt_begin, dt_end, state, [action, ...])}。値はすべて架空。"""
+    _create_history_tables(conn)
+    row_id = 0
+    for trans_id, (dt_begin, dt_end, state, actions) in transactions.items():
+        conn.execute(
+            "INSERT INTO trans VALUES (?, ?, ?, '', '', '', 0, '', ?, '')",
+            (trans_id, dt_begin, dt_end, state),
+        )
+        for action in actions:
+            row_id += 1
+            conn.execute(
+                "INSERT INTO trans_item VALUES (?, ?, ?, '', ?, 0, 0)",
+                (row_id, trans_id, row_id, action),
+            )
+    conn.commit()
+
+
 def memory_history_db(transactions):
     conn = sqlite3.connect(":memory:")
     make_history_db(conn, transactions)
     return conn
+
+
+def utc_ts(*args):
+    """UTC の日時から UNIX 時刻（秒）を作る。"""
+    return int(datetime(*args, tzinfo=timezone.utc).timestamp())
+
+
+LAST_UPGRADE_TS = utc_ts(2026, 11, 20, 10, 0, 0)
+
+# dnf repoquery --upgrades の記録出力（名前だけ。dnf は名前の間に空行を挟むことがある）
+SECURITY_DEFAULT = {
+    None: "openssl-libs\n\ngit\n\nbash\n",
+    "Critical": "",
+    "Important": "openssl-libs\n",
+    "Moderate": "git\nopenssl-libs\n",
+    "Low": "",
+}
 
 
 class FakeSystem:
@@ -145,6 +185,8 @@ class FakeSystem:
         now=None,
         userinstalled=DNF_USERINSTALLED,
         history=HISTORY_FIRST_NAMES,
+        security=None,
+        last_upgrade=LAST_UPGRADE_TS,
     ):
         self._rpm = rpm
         self._dnf = dnf
@@ -155,6 +197,9 @@ class FakeSystem:
         self._history = history
         self.dnf_names = None
         self.history_called = False
+        self._security = SECURITY_DEFAULT if security is None else security
+        self._last_upgrade = last_upgrade
+        self.security_calls = []
 
     @staticmethod
     def _give(value):
@@ -175,6 +220,13 @@ class FakeSystem:
     def history_first_names(self):
         self.history_called = True
         return self._give(self._history)
+
+    def dnf_security_upgrades(self, severity=None):
+        self.security_calls.append(severity)
+        return self._give(self._security[severity])
+
+    def history_last_upgrade(self):
+        return self._give(self._last_upgrade)
 
     def running_kernel(self):
         return self._kernel

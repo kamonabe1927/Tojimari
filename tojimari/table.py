@@ -89,6 +89,71 @@ def _user_installed_lines(ui: dict) -> list[str]:
     return [title, *_format_rows(USER_INSTALLED_HEADERS, rows)]
 
 
+SEVERITY_LABEL = {
+    "critical": "Critical",
+    "important": "Important",
+    "moderate": "Moderate",
+    "low": "Low",
+    "unspecified": "重要度なし",
+}
+UNCONFIRMED = "確認できませんでした"
+REBOOT_LABEL = {"pending": "再起動待ち", "not_pending": "再起動待ちではない"}
+
+
+def _dash(value) -> str:
+    return value if value is not None else "-"
+
+
+def _security_rows(sec: dict) -> list[tuple[str, str]]:
+    head = "セキュリティ更新"
+    if sec.get("status") != "ok":
+        return [(head, UNCONFIRMED)]
+    total = sec.get("total")
+    if not total:
+        return [(head, "0 件")]
+    by = sec.get("by_severity") or {}
+    parts = [
+        f"{SEVERITY_LABEL[key]} {by.get(key, 0)}"
+        for key in ("critical", "important", "moderate", "low", "unspecified")
+    ]
+    rows = [(head, f"{total} 件（{'、'.join(parts)}）")]
+    for p in sec.get("packages", []):
+        rows.append(("  " + p["name"], SEVERITY_LABEL.get(p["severity"], p["severity"])))
+    return rows
+
+
+def _reboot_row(reboot: dict) -> tuple[str, str]:
+    label = REBOOT_LABEL.get(reboot.get("status"), UNCONFIRMED)
+    running = _dash(reboot.get("running_kernel"))
+    latest = _dash(reboot.get("latest_kernel"))
+    return (
+        "再起動待ち",
+        f"{label}（動いている {running}、入っている最新 {latest}）",
+    )
+
+
+def _last_update_row(last: dict) -> tuple[str, str]:
+    head = "最後に更新した日"
+    status = last.get("status")
+    if status == "ok":
+        return (head, f"{_format_time(last['at'])}（{last['days_ago']} 日前）")
+    if status == "none":
+        return (head, "更新の記録がありません")
+    return (head, UNCONFIRMED)
+
+
+def _staleness_lines(st: dict) -> list[str]:
+    rows = []
+    if "security_updates" in st:
+        rows.extend(_security_rows(st["security_updates"]))
+    if "reboot" in st:
+        rows.append(_reboot_row(st["reboot"]))
+    if "last_update" in st:
+        rows.append(_last_update_row(st["last_update"]))
+    width = max([display_width(h) for h, _ in rows], default=0)
+    return ["[古さ]"] + [(_pad(h, width) + "    " + v).rstrip() for h, v in rows]
+
+
 def render_table(report: dict) -> str:
     if report.get("format") != "tojimari-check":
         raise ValueError("format が tojimari-check ではない")
@@ -120,6 +185,11 @@ def render_table(report: dict) -> str:
     if user_installed is not None:
         lines.append("")
         lines.extend(_user_installed_lines(user_installed))
+
+    staleness = report.get("checks", {}).get("staleness")
+    if staleness is not None:
+        lines.append("")
+        lines.extend(_staleness_lines(staleness))
 
     if others:
         lines.append("")
