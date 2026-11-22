@@ -56,6 +56,29 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(out)["checks"]["focus_packages"]["from_repo_available"])
 
+    def test_json_has_user_installed(self):
+        _, out, _ = run(["check", "--json"])
+        data = json.loads(out)
+        self.assertEqual(
+            data["checks"]["user_installed"],
+            check.collect(FakeSystem())["checks"]["user_installed"],
+        )
+        self.assertEqual(data["checks"]["user_installed"]["status"], "ok")
+
+    def test_history_failure_still_zero(self):
+        from tojimari.history import HistoryError
+        code, out, _ = run(["check", "--json"], FakeSystem(history=HistoryError("busy")))
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["checks"]["user_installed"]["method"], "from_repo_fallback")
+        self.assertIn("history_fallback", [n["id"] for n in data["notices"]])
+
+    def test_userinstalled_failure_still_zero(self):
+        for argv in (["check"], ["check", "--json"]):
+            code, out, _ = run(argv, FakeSystem(userinstalled=CommandError("timeout")))
+            self.assertEqual(code, 0)
+            self.assertIn("確認できませんでした" if argv == ["check"] else "user_installed_unavailable", out)
+
     def test_bad_args(self):
         for argv in ([], ["unknown"], ["check", "--unknown"]):
             with self.subTest(argv=argv):

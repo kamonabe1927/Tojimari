@@ -14,17 +14,23 @@ DNF_QUERYFORMAT = (
 )
 
 
-def dnf_from_repo_argv(names: list[str]) -> list[str]:
+def _dnf_repoquery_argv(selector: str) -> list[str]:
     return [
         "/usr/bin/dnf",
         "repoquery",
-        "--installed",
+        selector,
         "--cacheonly",
         "--quiet",
         "--queryformat",
         DNF_QUERYFORMAT,
-        *names,
     ]
+
+
+DNF_USERINSTALLED_ARGV = _dnf_repoquery_argv("--userinstalled")
+
+
+def dnf_from_repo_argv(names: list[str]) -> list[str]:
+    return [*_dnf_repoquery_argv("--installed"), *names]
 
 
 class ParseError(Exception):

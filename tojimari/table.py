@@ -5,6 +5,7 @@ from datetime import datetime
 
 STATUS_LABEL = {"installed": "入っている", "not_installed": "入っていない"}
 HEADERS = ["パッケージ", "状態", "バージョン", "アーキ", "入れた元"]
+USER_INSTALLED_HEADERS = ["パッケージ", "バージョン", "アーキ", "入れた元"]
 RUNNING_MARK = "<- 動いている"
 
 
@@ -46,6 +47,48 @@ def _focus_rows(focus: dict) -> list[tuple[list[str], bool]]:
     return rows
 
 
+def _format_rows(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """見出しと行を、表示幅でそろえた行にする（見出しの行が先頭）。"""
+    widths = [display_width(h) for h in headers]
+    for cells in rows:
+        for i, c in enumerate(cells):
+            widths[i] = max(widths[i], display_width(c))
+    out = ["  ".join(_pad(h, w) for h, w in zip(headers, widths)).rstrip()]
+    for cells in rows:
+        out.append("  ".join(_pad(c, w) for c, w in zip(cells, widths)).rstrip())
+    return out
+
+
+def _user_installed_lines(ui: dict) -> list[str]:
+    title = "[後から入れたもの]"
+    if ui.get("status") != "ok":
+        return [title, "確認できませんでした"]
+    pkgs = ui.get("packages", [])
+    count = len({p["name"] for p in pkgs})
+    method = ui.get("method")
+    if method == "history":
+        title += f"  dnf 履歴の 1 番の名前を除いた {count} 件"
+    elif method == "from_repo_fallback":
+        title += f"  入れた元が anaconda のものを除いた {count} 件（代わりの判定）"
+    else:
+        title += f"  {count} 件"
+    if not pkgs:
+        return [title, "該当なし"]
+    rows = []
+    prev = None
+    for p in pkgs:
+        rows.append(
+            [
+                p["name"] if p["name"] != prev else "",
+                p["evr"],
+                p["arch"],
+                p.get("from_repo") if p.get("from_repo") is not None else "-",
+            ]
+        )
+        prev = p["name"]
+    return [title, *_format_rows(USER_INSTALLED_HEADERS, rows)]
+
+
 def render_table(report: dict) -> str:
     if report.get("format") != "tojimari-check":
         raise ValueError("format が tojimari-check ではない")
@@ -64,20 +107,19 @@ def render_table(report: dict) -> str:
         lines.append("")
         lines.append("[重点リスト]")
         rows = _focus_rows(focus)
-        widths = [display_width(h) for h in HEADERS]
-        for cells, _ in rows:
-            for i, c in enumerate(cells):
-                widths[i] = max(widths[i], display_width(c))
-        lines.append(
-            "  ".join(_pad(h, w) for h, w in zip(HEADERS, widths)).rstrip()
-        )
-        for cells, running in rows:
-            line = "  ".join(_pad(c, w) for c, w in zip(cells, widths)).rstrip()
+        formatted = _format_rows(HEADERS, [cells for cells, _ in rows])
+        lines.append(formatted[0])
+        for line, (_, running) in zip(formatted[1:], rows):
             if running:
                 line += "  " + RUNNING_MARK
             lines.append(line)
         kernel = report.get("system", {}).get("running_kernel")
         lines.append(f"動いているカーネル: {kernel if kernel is not None else '-'}")
+
+    user_installed = report.get("checks", {}).get("user_installed")
+    if user_installed is not None:
+        lines.append("")
+        lines.extend(_user_installed_lines(user_installed))
 
     if others:
         lines.append("")

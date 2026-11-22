@@ -1,10 +1,12 @@
 """実行部。外部コマンドと OS への問い合わせはここだけで行う。"""
 
 import os
+import sqlite3
 import subprocess
+import urllib.parse
 from datetime import datetime, timezone
 
-from tojimari import packages
+from tojimari import history, packages
 
 RPM_TIMEOUT = 30
 DNF_TIMEOUT = 60
@@ -54,6 +56,52 @@ def run_command(argv: list[str], timeout: float) -> str:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
+def _db_snapshot(path: str) -> tuple:
+    """データベースの様子（本体の大きさ・更新時刻・先頭 100 バイト、補助ファイルの大きさ）。"""
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as f:
+            head = f.read(100)
+    except FileNotFoundError:
+        raise history.HistoryError("not_found") from None
+    except PermissionError:
+        raise history.HistoryError("permission") from None
+    except OSError:
+        raise history.HistoryError("os_error") from None
+    sizes = []
+    for suffix in ("-journal", "-wal"):
+        try:
+            sizes.append(os.stat(path + suffix).st_size)
+        except FileNotFoundError:
+            sizes.append(0)
+        except OSError:
+            raise history.HistoryError("os_error") from None
+    return (st.st_size, st.st_mtime_ns, head, sizes[0], sizes[1])
+
+
+def read_history_db(path: str, query):
+    """path のデータベースを mode=ro&immutable=1 で開き、query(execute) の結果を返す。
+    開けない、確かめに通らない、問い合わせが失敗したときは history.HistoryError。"""
+    before = _db_snapshot(path)
+    if before[3] > 0 or before[4] > 0:
+        raise history.HistoryError("busy")
+
+    uri = "file:" + urllib.parse.quote(path) + "?mode=ro&immutable=1"
+    conn = None
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+        result = query(lambda sql: conn.execute(sql).fetchall())
+    except sqlite3.Error:
+        raise history.HistoryError("query_failed") from None
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if _db_snapshot(path) != before:
+        raise history.HistoryError("changed")
+    return result
+
+
 class System:
     """実機への問い合わせをまとめたもの。テストではこのクラスごと差し替える。"""
 
@@ -62,6 +110,12 @@ class System:
 
     def dnf_from_repo(self, names) -> str:
         return run_command(packages.dnf_from_repo_argv(list(names)), DNF_TIMEOUT)
+
+    def dnf_userinstalled(self) -> str:
+        return run_command(packages.DNF_USERINSTALLED_ARGV, DNF_TIMEOUT)
+
+    def history_first_names(self) -> frozenset[str]:
+        return read_history_db(history.DB_PATH, history.query_first_transaction)
 
     def running_kernel(self):
         try:
