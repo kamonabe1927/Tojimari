@@ -2,7 +2,7 @@
 
 from datetime import timezone
 
-from tojimari import history, notices, packages, processes, staleness
+from tojimari import display, history, notices, packages, processes, staleness
 from tojimari.runner import CommandError
 
 FOCUS_PACKAGES = [
@@ -22,7 +22,10 @@ _NO_RPM_MATCH_REASON = "dnf の出力が rpm の記録と突き合わなかっ�
 
 
 class CheckError(Exception):
-    """出力そのものができない（終了コード 1 にする）。"""
+    """出力そのものができない（終了コード 1 にする）。
+
+    文に外部コマンド由来の文字列を入れるときは、入れるところで display の関数を通す。
+    """
 
 
 def _rpm_failure_message(err: CommandError) -> str:
@@ -38,7 +41,8 @@ def _rpm_failure_message(err: CommandError) -> str:
     else:
         msg = "rpm を実行できませんでした"
     if err.stderr_tail:
-        msg += "\n" + err.stderr_tail
+        lines = [display.replace_and_clip(line) for line in err.stderr_tail.split("\n")]
+        msg += "\n" + "\n".join(lines)
     return msg
 
 

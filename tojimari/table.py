@@ -3,6 +3,8 @@
 import unicodedata
 from datetime import datetime
 
+from tojimari import display
+
 STATUS_LABEL = {"installed": "入っている", "not_installed": "入っていない"}
 HEADERS = ["パッケージ", "状態", "バージョン", "アーキ", "入れた元"]
 USER_INSTALLED_HEADERS = ["パッケージ", "バージョン", "アーキ", "入れた元"]
@@ -179,6 +181,7 @@ def render_table(report: dict) -> str:
         raise ValueError("format が tojimari-check ではない")
     if report.get("schema_version") != 1:
         raise ValueError("知らない schema_version")
+    report = display.replace_controls_deep(report)
 
     notice_list = report.get("notices", [])
     guarantee = [n["message"] for n in notice_list if n["id"] == "not_a_guarantee"]
