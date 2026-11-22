@@ -6,7 +6,7 @@ import subprocess
 import urllib.parse
 from datetime import datetime, timezone
 
-from tojimari import history, packages
+from tojimari import history, packages, processes
 
 RPM_TIMEOUT = 30
 DNF_TIMEOUT = 60
@@ -102,11 +102,65 @@ def read_history_db(path: str, query):
     return result
 
 
+def _os_error_kind(exc: OSError) -> str:
+    if isinstance(exc, (FileNotFoundError, ProcessLookupError)):
+        return "gone"
+    if isinstance(exc, PermissionError):
+        return "permission"
+    return "other"
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def scan_processes(proc_dir="/proc", root_dir="/") -> processes.ProcessScan:
+    """proc_dir を 1 回見回し、生の値を返す。読むだけ（cmdline と environ は読まない）。
+    見回せなければ processes.ScanError。"""
+    try:
+        own = os.stat(root_dir)
+        names = os.listdir(proc_dir)
+    except OSError:
+        raise processes.ScanError("見回せない") from None
+    infos = []
+    for name in sorted((n for n in names if n.isascii() and n.isdigit()), key=int):
+        base = os.path.join(proc_dir, name)
+        stat_text = _read_text(os.path.join(base, "stat"))
+        exe = exe_error = None
+        try:
+            exe = os.readlink(os.path.join(base, "exe"))
+        except OSError as exc:
+            exe_error = _os_error_kind(exc)
+        root = root_error = None
+        try:
+            st = os.stat(os.path.join(base, "root"))
+            root = (st.st_dev, st.st_ino)
+        except OSError as exc:
+            root_error = _os_error_kind(exc)
+        cgroup = _read_text(os.path.join(base, "cgroup"))
+        infos.append(
+            processes.ProcessInfo(
+                int(name), stat_text, exe, exe_error, root, root_error, cgroup
+            )
+        )
+    return processes.ProcessScan(os.getpid(), (own.st_dev, own.st_ino), infos)
+
+
 class System:
     """実機への問い合わせをまとめたもの。テストではこのクラスごと差し替える。"""
 
     def rpm_list(self) -> str:
         return run_command(packages.RPM_LIST_ARGV, RPM_TIMEOUT)
+
+    def rpm_files(self) -> str:
+        return run_command(packages.RPM_FILES_ARGV, RPM_TIMEOUT)
+
+    def process_scan(self) -> processes.ProcessScan:
+        return scan_processes()
 
     def dnf_from_repo(self, names) -> str:
         return run_command(packages.dnf_from_repo_argv(list(names)), DNF_TIMEOUT)

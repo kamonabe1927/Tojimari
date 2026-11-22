@@ -2,7 +2,7 @@
 
 from datetime import timezone
 
-from tojimari import history, notices, packages, staleness
+from tojimari import history, notices, packages, processes, staleness
 from tojimari.runner import CommandError
 
 FOCUS_PACKAGES = [
@@ -141,6 +141,30 @@ def _collect_user_installed(system, installed):
     )
 
 
+_PROC_REASON = "/proc を読み取れなかった"
+_RPM_FILES_PARSE_REASON = "rpm の出力を読み取れなかった"
+_RUNNING_UNAVAILABLE = {"status": "unavailable", "unreadable": None}
+
+
+def _collect_running(system) -> tuple[dict | None, dict, str | None]:
+    """(marks, checks.running_processes, unavailable のときの理由)。"""
+    try:
+        scan = system.process_scan()
+    except processes.ScanError:
+        return None, dict(_RUNNING_UNAVAILABLE), _PROC_REASON
+    candidates, unreadable = processes.classify(scan)
+    try:
+        file_map = packages.parse_rpm_files(
+            system.rpm_files(), frozenset(path for path, _ in candidates)
+        )
+    except CommandError as err:
+        return None, dict(_RUNNING_UNAVAILABLE), notices.command_reason("rpm", 30, err)
+    except packages.ParseError:
+        return None, dict(_RUNNING_UNAVAILABLE), _RPM_FILES_PARSE_REASON
+    marks = processes.build_marks(candidates, file_map)
+    return marks, {"status": "ok", "unreadable": unreadable}, None
+
+
 def collect(system) -> dict:
     try:
         installed = packages.parse_rpm_list(system.rpm_list())
@@ -178,6 +202,9 @@ def collect(system) -> dict:
         system, installed, running_kernel, now
     )
 
+    marks, running_checks, running_problem = _collect_running(system)
+    processes.apply_marks(focus, user_installed, marks)
+
     return {
         "format": "tojimari-check",
         "schema_version": 1,
@@ -188,6 +215,7 @@ def collect(system) -> dict:
             "focus_packages": focus,
             "user_installed": user_installed,
             "staleness": staleness_checks,
+            "running_processes": running_checks,
         },
         "notices": notices.build_notices(
             is_root,
@@ -199,5 +227,7 @@ def collect(system) -> dict:
             security_updates_problem=staleness_problems["security_updates"],
             reboot_problem=staleness_problems["reboot"],
             last_update_problem=staleness_problems["last_update"],
+            running_problem=running_problem,
+            running_unreadable=running_checks["unreadable"] or 0,
         ),
     }

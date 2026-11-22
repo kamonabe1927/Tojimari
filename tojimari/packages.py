@@ -1,5 +1,6 @@
 """読み取り部。rpm と dnf の問い合わせの形と、その出力の読み取り。何も実行しない。"""
 
+import io
 import re
 from dataclasses import dataclass
 
@@ -8,6 +9,14 @@ RPM_LIST_ARGV = [
     "-qa",
     "--queryformat",
     "%{NAME}\\t%|EPOCH?{%{EPOCH}}:{}|\\t%{VERSION}\\t%{RELEASE}\\t%{ARCH}\\n",
+]
+
+RPM_FILES_ARGV = [
+    "/usr/bin/rpm",
+    "-qa",
+    "--queryformat",
+    "P\\t%{NAME}\\t%|EPOCH?{%{EPOCH}}:{}|\\t%{VERSION}\\t%{RELEASE}\\t%{ARCH}\\n"
+    "[F\\t%{FILENAMES}\\n]",
 ]
 
 DNF_QUERYFORMAT = (
@@ -75,25 +84,53 @@ class PackageVersion:
     arch: str
 
 
+def _package_from_fields(fields: list[str]) -> PackageVersion:
+    if len(fields) != 5:
+        raise ParseError("項目の数が違う行がある")
+    name, epoch, version, release, arch = fields
+    if not name or not version or not release:
+        raise ParseError("名前・version・release が空の行がある")
+    if epoch != "" and not (epoch.isascii() and epoch.isdigit()):
+        raise ParseError("epoch が数字でない行がある")
+    return PackageVersion(name, epoch if epoch != "" else None, version, release, arch)
+
+
 def parse_rpm_list(text: str) -> list[PackageVersion]:
     result = []
     for line in text.split("\n"):
         if line.strip() == "":
             continue
-        fields = line.split("\t")
-        if len(fields) != 5:
-            raise ParseError("項目の数が違う行がある")
-        name, epoch, version, release, arch = fields
-        if not name or not version or not release:
-            raise ParseError("名前・version・release が空の行がある")
-        if epoch != "" and not (epoch.isascii() and epoch.isdigit()):
-            raise ParseError("epoch が数字でない行がある")
-        result.append(
-            PackageVersion(name, epoch if epoch != "" else None, version, release, arch)
-        )
+        result.append(_package_from_fields(line.split("\t")))
     if not result:
         raise ParseError("1 行も読めなかった")
     return result
+
+
+def parse_rpm_files(text: str, wanted) -> dict[str, frozenset[tuple]]:
+    """wanted（パスの集まり）にあるパスだけを残し、パス → 版のキーの集まりを返す。
+    形が合わなければ ParseError。"""
+    found: dict[str, set[tuple]] = {}
+    current = None
+    seen_package = False
+    for raw in io.StringIO(text):
+        line = raw[:-1] if raw.endswith("\n") else raw
+        if line.strip() == "":
+            continue
+        if line.startswith("P\t"):
+            pkg = _package_from_fields(line[2:].split("\t"))
+            current = version_key(pkg.name, pkg.epoch, pkg.version, pkg.release, pkg.arch)
+            seen_package = True
+        elif line.startswith("F\t"):
+            if current is None:
+                raise ParseError("P の行より前に F の行がある")
+            path = line[2:]
+            if path in wanted:
+                found.setdefault(path, set()).add(current)
+        else:
+            raise ParseError("P でも F でもない行がある")
+    if not seen_package:
+        raise ParseError("P の行が 1 つも読めなかった")
+    return {path: frozenset(keys) for path, keys in found.items()}
 
 
 def version_key(name, epoch, version, release, arch) -> tuple:

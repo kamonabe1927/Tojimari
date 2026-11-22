@@ -1,8 +1,8 @@
 # 1.1 出力仕様: コマンド、JSON、人が読む表
 
 - 作成日: 2026-11-21（issue #5 で PM が決めた）
-- 状態: 1.1 の出力の決定事項。今動いているかの印は、この文書の「後で足す項目」の決まりに沿って足す
-- 更新: 2026-11-22 古さ（`checks.staleness`）の JSON、注意、表を足した（issue #13、2.4・2.7・3.4）。要件は [task-issue-13.md](task-issue-13.md)。2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
+- 状態: 1.1 の出力の決定事項
+- 更新: 2026-11-22 今動いているかの印（版の要素の `running`・`systemd_service`、`checks.running_processes`）の JSON、注意、表を足した（issue #14、2.3・2.4・2.8・3.5）。要件は [task-issue-14.md](task-issue-14.md)。2026-11-22 古さ（`checks.staleness`）の JSON、注意、表を足した（issue #13、2.4・2.7・3.4）。要件は [task-issue-13.md](task-issue-13.md)。2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
 - 位置付け: [spec-1.1.md](spec-1.1.md) の 6「1.1 で未決のこと」のうち、JSON の項目名と構造、人が読む表の見た目、コマンド名と起動のしかたを決める。1.1 の直後に足す FastAPI の画面も、この JSON を読んで表示する
 
 ## 1. コマンドと起動のしかた
@@ -122,7 +122,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 
 ### 2.3 入っている版（パッケージの 1 版）
 
-後で足す「後から入れたもの」の一覧も、同じ形の要素を使う。
+「後から入れたもの」の一覧（2.6）も、同じ形の要素を使う。
 
 | 項目 | 型 | 内容 |
 |---|---|---|
@@ -134,6 +134,8 @@ sudo python3 -B -m tojimari check --json   # JSON
 | `evr` | 文字列 | 表示用。`version-release`。epoch があれば `epoch:version-release` |
 | `from_repo` | 文字列 または null | dnf が記録している、入れた元のリポジトリ。取れなければ null |
 | `is_running_kernel` | 真偽 | **kernel の版にだけ付ける**。`version-release.arch` が `system.running_kernel` と一致すれば true |
+| `running` | 真偽 または null | 今動いているプロセスの実行ファイルのパスを、この版が持っていれば true（2.8）。`checks.running_processes.status` が `unavailable` なら null |
+| `systemd_service` | 真偽 または null | そのプロセスのうち、システムのサービスとして動いているものがあれば true（2.8）。true なら `running` も true。`checks.running_processes.status` が `unavailable` なら null |
 
 - 同じ名前の版が複数あれば（kernel の複数世代、x86_64 と i686 の両方が入った glibc など）、すべて並べる。並びは rpm の比較ではなく、`version`、`release`、`arch` の文字列の昇順でよい（比較の正しさを 1.1 では求めないため。古さの判定は後の issue で扱う）
 - `is_running_kernel` が true の版が 1 つもないとき（動いているカーネルが rpm の記録に無いとき）は、`notices` にその旨が入る
@@ -151,7 +153,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 |---|---|---|
 | `not_a_guarantee` | 常に | この表示は確認の補助であり、安全であることを示すものではない |
 | `scope` | 常に | 表示対象は dnf（rpm）で入れたものと重点リストだけ。パッケージ管理の外で個別にビルド・配置したもの、pip などの言語ごとのパッケージ管理で入れたもの、Docker コンテナの中身は表示しない。表示されないことを「入っていない」と扱わない |
-| `running_is_snapshot` | 常に | 「今動いている」はその瞬間の様子。印がないことを「使っていない」と扱わない |
+| `running_is_snapshot` | 常に | 「今動いている」はその瞬間の様子。印がないことを「使っていない」と扱わない。Docker コンテナの中で動いているものには印を付けない。印は実行ファイルのパスで付けるので、更新した後に再起動していないプロセスは新しい版の印として出る（issue #14 で後ろの 2 文を足した） |
 | `not_root` | `run.is_root` が false のとき | root なしで実行したため、見えた範囲だけを表示している。`sudo` での実行を勧める |
 | `from_repo_unavailable` | `from_repo_available` が false のとき | 入れた元のリポジトリを取得できなかった（理由の要約を含める） |
 | `running_kernel_not_found` | 動いているカーネルが、入っている kernel の版のどれとも一致しないとき、または取れなかったとき | 動いているカーネルが rpm の記録の中に見つからなかった |
@@ -161,9 +163,11 @@ sudo python3 -B -m tojimari check --json   # JSON
 | `security_updates_unavailable` | `checks.staleness.security_updates.status` が `unavailable` のとき（2.7） | リポジトリ情報を確認できなかったため、セキュリティ更新の有無は分からない。「更新なし」という意味ではない。理由の要約を含める |
 | `reboot_unknown` | `checks.staleness.reboot.status` が `unknown` のとき（2.7） | 再起動待ちかどうかを確認できなかった。「再起動待ちではない」という意味ではない。理由の要約を含める |
 | `last_update_unavailable` | `checks.staleness.last_update.status` が `unavailable` のとき（2.7） | dnf 履歴から最後に更新した日を確認できなかった。理由の要約を含める |
+| `running_unavailable` | `checks.running_processes.status` が `unavailable` のとき（2.8） | 動いているプロセスを確認できなかったため、今動いているかの印を付けていない。「どれも動いていない」という意味ではない。理由の要約を含める |
+| `running_partial` | `checks.running_processes.unreadable` が 1 以上のとき（2.8） | N 個のプロセスは権限が無くて実行ファイルかルートディレクトリを読めなかったため、印のもとにしていない。印の無い版の中にも、動いているものがありうる |
 
 - `scope`、`running_is_snapshot`、`not_root`、`history_fallback` は spec-1.1.md の「3. 表示の注意」にあたる
-- `running_is_snapshot` は、今動いているかの印をまだ出さない今回も出す（spec-1.1.md の 3 が「出力に必ず含める」としているため）
+- `running_is_snapshot` は、#5 で今動いているかの印をまだ出さなかったときから出している（spec-1.1.md の 3 が「出力に必ず含める」としているため）
 - 並びは表の順
 
 ### 2.5 後で足す項目の決まり
@@ -171,7 +175,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 - 後で足す確認は、`checks` の下に新しいキーとして足す。予定しているキーは次のとおり
   - `user_installed`: 後から入れたもの（spec-1.1.md の 2.1）。2.6 に決めた（issue #12）
   - `staleness`: 古さ（spec-1.1.md の 2.3）。2.7 に決めた（issue #13）
-- 今動いているかの印（spec-1.1.md の 2.4）は、2.3 の版の要素に項目を足す形にする（予定する名前: `running`、`systemd_service`。どちらも真偽。中身はその issue で決める）
+- 今動いているかの印（spec-1.1.md の 2.4）は、2.3 の版の要素に項目を足す形にする（`running`、`systemd_service`）。見回しの結果は `checks.running_processes` に出す。2.3 と 2.8 に決めた（issue #14）。予定では「どちらも真偽」としていたが、見回しができなかったときに「動いていない」と区別するため null も取りうることにした
 - 読む側（表の出力、1.1 の直後の画面）は次を守る
   - `checks` にキーが無いことを「確認して何も無かった」と扱わず、「この版では確認していない」と扱う
   - 知らない項目は無視する
@@ -210,7 +214,7 @@ issue #12 で決めた。判定のしかたと、取れないときの扱いの�
 - 版の値は rpm の記録から取る。`from_repo` は dnf の記録から取り、取れなければ null
 - 重点リストに入っている名前でも、後から入れたものに当たれば、ここにも出す（重点リストは別枠のため）
 - `status` が `unavailable` のとき、`packages` が空であることを「後から入れたものは無い」と扱わない。読む側は `status` を先に見る
-- 今動いているかの印（1.1-C）は、2.5 のとおり後で版の要素に足す
+- 今動いているかの印は、2.3 の `running`・`systemd_service` を各版に付ける（issue #14。`is_running_kernel` は付けない）
 
 ### 2.7 `checks.staleness`（古さ）
 
@@ -274,6 +278,32 @@ issue #13 で決めた。取り方と、取れないときの扱いの要件は 
 - 3 つは別々に取る。どれかが取れなくても、ほかは出す
 - `security_updates.status` が `unavailable` のとき、読む側は「更新なし」と扱わない。`reboot.status` が `unknown` のとき、「再起動待ちではない」と扱わない
 - 「パッケージの版を上げた処理」は、dnf 履歴で、版を上げる項目を 1 件以上含み、最後まで終わった処理（`dnf install` で依存の版が上がったものを含む）
+
+### 2.8 今動いているかの印と `checks.running_processes`
+
+issue #14 で決めた。取り方と、取れないときの扱いの要件は [task-issue-14.md](task-issue-14.md) の 3 にある。
+
+印は、重点リスト（2.2）と後から入れたもの（2.6）の各版の要素に `running` と `systemd_service` として付ける（2.3）。見回し全体の結果は次のとおり出す。
+
+```json
+{
+  "status": "ok",
+  "unreadable": 0
+}
+```
+
+| 項目 | 型 | 内容 |
+|---|---|---|
+| `status` | 文字列 | `ok`（動いているプロセスを見回し、rpm でパッケージに結びつけられた）、`unavailable`（見回しか rpm への問い合わせができなかった） |
+| `unreadable` | 整数 または null | 権限が無くて実行ファイルかルートディレクトリを読めなかったプロセスの数。`unavailable` なら null |
+
+- `running` の意味: その版が持つ実行ファイルのパスで、今動いているプロセスがある。更新で入れ替わった古い実行ファイルが動いているときも、今そのパスを持つ版に印が付く（更新前の中身かどうかは見分けない）
+- `systemd_service` の意味: そのプロセスのうち、システムのサービス（cgroup のパスのどこかの部分が `.service` で終わり、`/user.slice` の下ではないもの。`Delegate=yes` のサービスの子の cgroup も含む）として動いているものがある
+- 結びつけないもの: 実行ファイルの無いもの（カーネルのスレッドなど）、見回しているあいだに終わったもの、Tojimari 自身とその子プロセス、Tojimari と違うルートディレクトリで動いているもの（Docker コンテナの中など）。マウントの名前空間だけが違うもの（`PrivateTmp=` などのある systemd のサービス）は結びつける
+- Tojimari の親（`sudo`）は除かない。`sudo` で実行すると、重点リストの `sudo` の版には `running` が true で出る。その瞬間に実際に動いているためで、誤りではない
+- kernel の版の `running` は、プロセスの実行ファイルではないので、いつも false（`ok` のとき）。動いているカーネルは `is_running_kernel` で見る
+- 実行ファイルのパス、pid、サービスの名前は出さない（パスに利用者の名前などが入りうるため。印に要るものだけを出す）
+- `false` は「見えた範囲で、その瞬間に動いていなかった」という意味で、「使っていない」ではない。読む側は `status` と `unreadable` を先に見る
 
 ## 3. 人が読む表
 
@@ -360,4 +390,29 @@ htop             3.3.0-5.el10        aarch64  epel
 - 最後に更新した日
   - `ok` は「YYYY-MM-DD HH:MM UTC（N 日前）」と出す
   - `none` は「更新の記録がありません」、`unavailable` は「確認できませんでした」と出す。`unavailable` の理由は `[注意]` の `last_update_unavailable` に出す
+- 列の揃え方と装飾の決まりは 3.2 と同じ
+
+### 3.5 今動いているかの印（issue #14 で足した）
+
+重点リストと後から入れたものの表の、各版の行の終わりに印を付ける（例の値は架空のもの）。
+
+```
+[重点リスト]
+パッケージ       状態          バージョン          アーキ   入れた元
+kernel           入っている    6.12.0-55.el10      aarch64  baseos    <- 動いている
+openssh-server   入っている    9.9p1-7.el10        aarch64  baseos    <- 今動いている（systemd のサービス）
+openssh          入っている    9.9p1-7.el10        aarch64  baseos
+...
+
+[後から入れたもの]  dnf 履歴の 1 番の名前を除いた 3 件
+パッケージ       バージョン          アーキ   入れた元
+gh               2.65.0-1            aarch64  gh-cli
+git              2.47.1-1.el10       aarch64  appstream
+htop             3.3.0-5.el10        aarch64  epel      <- 今動いている
+```
+
+- `systemd_service` が true の版は「<- 今動いている（systemd のサービス）」、`running` だけが true の版は「<- 今動いている」を付ける。どちらも false の版には何も付けない（印の無いことの意味は `[注意]` の `running_is_snapshot` に出す）
+- kernel の動いている版の「<- 動いている」（3.2）はこれまでどおり。kernel の版にはプロセスの印は付かないので、2 つが同じ行に並ぶことは無い
+- `checks.running_processes.status` が `unavailable` のときは、どの版にも印を付けず、理由を `[注意]` の `running_unavailable` に出す
+- 読めなかったプロセスがあるときは、`[注意]` の `running_partial` に数を出す
 - 列の揃え方と装飾の決まりは 3.2 と同じ

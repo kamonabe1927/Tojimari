@@ -11,6 +11,9 @@ SCOPE = (
 RUNNING_IS_SNAPSHOT = (
     "「今動いている」はその瞬間の様子です。"
     "印がないことを「使っていない」と扱わないでください。"
+    "Docker コンテナの中で動いているものには印を付けません。"
+    "印は実行ファイルのパスで付けるため、"
+    "更新した後に再起動していないプロセスは、新しい版の印として出ます。"
 )
 NOT_ROOT = (
     "root なしで実行したため、見えた範囲だけを表示しています。"
@@ -53,6 +56,16 @@ REBOOT_UNKNOWN = (
 LAST_UPDATE_UNAVAILABLE = (
     "dnf 履歴から最後に更新した日を確認できませんでした（理由: {reason}）。"
 )
+RUNNING_UNAVAILABLE = (
+    "動いているプロセスを確認できなかったため（理由: {reason}）、"
+    "今動いているかの印を付けていません。"
+    "「どれも動いていない」という意味ではありません。"
+)
+RUNNING_PARTIAL = (
+    "{count} 個のプロセスは、権限が無くて実行ファイルかルートディレクトリを"
+    "読めなかったため、印のもとにしていません。"
+    "印の無い版の中にも、動いているものがありえます。"
+)
 
 
 def command_reason(tool: str, timeout: int, err) -> str:
@@ -76,6 +89,8 @@ def build_notices(
     security_updates_problem: str | None = None,
     reboot_problem: str | None = None,
     last_update_problem: str | None = None,
+    running_problem: str | None = None,
+    running_unreadable: int = 0,
 ) -> list[dict]:
     notices = [
         {"id": "not_a_guarantee", "message": NOT_A_GUARANTEE},
@@ -136,6 +151,20 @@ def build_notices(
             {
                 "id": "last_update_unavailable",
                 "message": LAST_UPDATE_UNAVAILABLE.format(reason=last_update_problem),
+            }
+        )
+    if running_problem is not None:
+        notices.append(
+            {
+                "id": "running_unavailable",
+                "message": RUNNING_UNAVAILABLE.format(reason=running_problem),
+            }
+        )
+    if running_unreadable >= 1:
+        notices.append(
+            {
+                "id": "running_partial",
+                "message": RUNNING_PARTIAL.format(count=running_unreadable),
             }
         )
     return notices

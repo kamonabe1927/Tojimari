@@ -3,6 +3,8 @@
 import sqlite3
 from datetime import datetime, timezone
 
+from tojimari.processes import ProcessInfo, ProcessScan
+
 RUNNING_KERNEL = "6.12.0-55.el10.aarch64"
 
 RPM_ALL_INSTALLED = (
@@ -76,6 +78,70 @@ DNF_NOISE = (
     "a\tb\n"
 )
 
+
+# rpm -qa のファイル一覧の記録出力（架空）。P の行は RPM_ALL_INSTALLED と同じ版に、
+# 実行ファイルを持つ版だけ F の行を付ける
+_RPM_FILE_PATHS = {
+    "openssh-server": ["/usr/sbin/sshd"],
+    "sudo": ["/usr/bin/sudo"],
+    "systemd": ["/usr/lib/systemd/systemd", "/usr/lib/systemd/systemd-journald"],
+    "bash": ["/usr/bin/bash"],
+    "git": ["/usr/bin/git"],
+    "htop": ["/usr/bin/htop"],
+    "glibc": ["/usr/lib64/example-glibc-helper"],
+}
+
+
+def _rpm_files_text():
+    out = []
+    for line in RPM_ALL_INSTALLED.split("\n"):
+        if not line:
+            continue
+        out.append("P\t" + line + "\n")
+        for path in _RPM_FILE_PATHS.get(line.split("\t")[0], []):
+            out.append("F\t" + path + "\n")
+    return "".join(out)
+
+
+RPM_FILES = _rpm_files_text()
+
+# 架空の /proc の見回し（値はすべて架空）
+OWN_ROOT = (64769, 2)
+OTHER_ROOT = (64769, 999)
+SELF_PID = 4000
+
+
+def make_proc(
+    pid,
+    exe="/usr/bin/example",
+    ppid=1,
+    state="S",
+    flags=0,
+    root=OWN_ROOT,
+    cgroup="0::/user.slice/user-1000.slice/session-1.scope\n",
+    exe_error=None,
+    root_error=None,
+    stat="auto",
+):
+    """架空のプロセス 1 つ。stat="auto" なら ppid などから stat の中身を作る。"""
+    if stat == "auto":
+        stat = f"{pid} (name) {state} {ppid} 1 1 0 -1 {flags} 0 0 0 0\n"
+    return ProcessInfo(
+        pid,
+        stat,
+        None if exe_error else exe,
+        exe_error,
+        None if root_error else root,
+        root_error,
+        cgroup,
+    )
+
+
+def make_scan(*procs, self_pid=SELF_PID):
+    return ProcessScan(self_pid, OWN_ROOT, list(procs))
+
+
+SERVICE_CGROUP = "0::/system.slice/example.service\n"
 
 # dnf repoquery --userinstalled の記録出力（架空）。kernel は 2 つの版、
 # bash はインストール後に更新された OS 標準（入れた元が baseos）
@@ -187,6 +253,8 @@ class FakeSystem:
         history=HISTORY_FIRST_NAMES,
         security=None,
         last_upgrade=LAST_UPGRADE_TS,
+        processes=None,
+        rpm_files=RPM_FILES,
     ):
         self._rpm = rpm
         self._dnf = dnf
@@ -200,6 +268,9 @@ class FakeSystem:
         self._security = SECURITY_DEFAULT if security is None else security
         self._last_upgrade = last_upgrade
         self.security_calls = []
+        self._processes = make_scan() if processes is None else processes
+        self._rpm_files = rpm_files
+        self.rpm_files_called = False
 
     @staticmethod
     def _give(value):
@@ -227,6 +298,13 @@ class FakeSystem:
 
     def history_last_upgrade(self):
         return self._give(self._last_upgrade)
+
+    def process_scan(self):
+        return self._give(self._processes)
+
+    def rpm_files(self):
+        self.rpm_files_called = True
+        return self._give(self._rpm_files)
 
     def running_kernel(self):
         return self._kernel

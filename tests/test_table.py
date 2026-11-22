@@ -2,8 +2,8 @@ import copy
 import unittest
 
 from tests import recorded
-from tests.recorded import FakeSystem
-from tojimari import check, notices, table
+from tests.recorded import FakeSystem, SELF_PID, SERVICE_CGROUP, make_proc, make_scan
+from tojimari import check, notices, processes, table
 from tojimari.runner import CommandError
 
 
@@ -466,3 +466,88 @@ class NoGuaranteeWordsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def running_report(**kw):
+    procs = [
+        make_proc(10, exe="/usr/sbin/sshd", cgroup=SERVICE_CGROUP),
+        make_proc(11, exe="/usr/bin/htop"),
+        make_proc(100, exe="/usr/bin/sudo", ppid=50),
+        make_proc(SELF_PID, exe="/usr/bin/git", ppid=100),
+    ]
+    return report(processes=make_scan(*procs), **kw)
+
+
+def line_of(text, name):
+    return [l for l in text.split("\n") if l.startswith(name + " ")][0]
+
+
+class RunningMarkTest(unittest.TestCase):
+    def setUp(self):
+        self.text = table.render_table(running_report())
+
+    def test_service_mark(self):
+        self.assertTrue(line_of(self.text, "openssh-server").endswith(
+            "baseos  <- 今動いている（systemd のサービス）"))
+
+    def test_running_only_mark_in_focus(self):
+        self.assertTrue(line_of(self.text, "sudo").endswith("appstream  <- 今動いている"))
+
+    def test_user_installed_marks(self):
+        self.assertTrue(line_of(self.text, "htop").endswith("epel  <- 今動いている"))
+        self.assertNotIn("<- 今動いている", line_of(self.text, "git"))
+        self.assertNotIn("<- 今動いている", line_of(self.text, "gh"))
+
+    def test_kernel_mark_unchanged(self):
+        marked = [l for l in self.text.split("\n") if "<- 動いている" in l]
+        self.assertEqual(len(marked), 1)
+
+    def test_no_marks_for_default(self):
+        t = table.render_table(report())
+        self.assertNotIn("<- 今動いている", t)
+
+    def test_unavailable_has_no_marks(self):
+        r = report(processes=processes.ScanError("x"))
+        t = table.render_table(r)
+        self.assertNotIn("<- 今動いている", t)
+        self.assertIn("- " + [n for n in r["notices"] if n["id"] == "running_unavailable"][0]["message"], t)
+
+    def test_partial_notice_shown(self):
+        r = report(processes=make_scan(make_proc(10, exe_error="permission")))
+        t = table.render_table(r)
+        msg = [n for n in r["notices"] if n["id"] == "running_partial"][0]["message"]
+        self.assertIn("- " + msg, t)
+
+    def test_matches_json(self):
+        r = running_report()
+        t = table.render_table(r)
+        for p in r["checks"]["focus_packages"]["packages"]:
+            for v in p["installed"]:
+                line_marked = "<- 今動いている" in [l for l in t.split("\n") if l.startswith(p["name"] + " ")][0]
+                self.assertEqual(line_marked, bool(v["running"]))
+
+    def test_both_marks_kernel_first(self):
+        r = running_report()
+        v = r["checks"]["focus_packages"]["packages"][0]["installed"][1]
+        self.assertTrue(v["is_running_kernel"])
+        v["running"] = True
+        t = table.render_table(r)
+        line = [l for l in t.split("\n") if "<- 動いている" in l][0]
+        self.assertTrue(line.endswith("<- 動いている  <- 今動いている"))
+
+    def test_old_json_without_running_keys(self):
+        r = running_report()
+        for p in r["checks"]["focus_packages"]["packages"]:
+            for v in p["installed"]:
+                v.pop("running"), v.pop("systemd_service")
+        for v in r["checks"]["user_installed"]["packages"]:
+            v.pop("running"), v.pop("systemd_service")
+        del r["checks"]["running_processes"]
+        t = table.render_table(r)
+        self.assertNotIn("<- 今動いている", t)
+        self.assertIn("[後から入れたもの]", t)
+
+    def test_no_paths_or_pids(self):
+        t = table.render_table(running_report())
+        for word in ("/usr/sbin", "/usr/bin", "4000", "system.slice", "example.service"):
+            self.assertNotIn(word, t)
