@@ -1,8 +1,8 @@
 # 1.1 出力仕様: コマンド、JSON、人が読む表
 
 - 作成日: 2026-11-21（issue #5 で PM が決めた）
-- 状態: 1.1 の出力の決定事項。後から入れたもの、古さ、今動いているかの印は、この文書の「後で足す項目」の決まりに沿って足す
-- 更新: 2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
+- 状態: 1.1 の出力の決定事項。今動いているかの印は、この文書の「後で足す項目」の決まりに沿って足す
+- 更新: 2026-11-22 古さ（`checks.staleness`）の JSON、注意、表を足した（issue #13、2.4・2.7・3.4）。要件は [task-issue-13.md](task-issue-13.md)。2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
 - 位置付け: [spec-1.1.md](spec-1.1.md) の 6「1.1 で未決のこと」のうち、JSON の項目名と構造、人が読む表の見た目、コマンド名と起動のしかたを決める。1.1 の直後に足す FastAPI の画面も、この JSON を読んで表示する
 
 ## 1. コマンドと起動のしかた
@@ -157,6 +157,10 @@ sudo python3 -B -m tojimari check --json   # JSON
 | `running_kernel_not_found` | 動いているカーネルが、入っている kernel の版のどれとも一致しないとき、または取れなかったとき | 動いているカーネルが rpm の記録の中に見つからなかった |
 | `history_fallback` | `checks.user_installed.method` が `from_repo_fallback` のとき（2.6） | dnf 履歴が取れず、入れた元のリポジトリが `anaconda` かによる代わりの判定を使ったため精度が落ちている（インストール後に更新した OS 標準が、後から入れたものに混ざりうる）。履歴が取れなかった理由の要約を含める |
 | `user_installed_unavailable` | `checks.user_installed.status` が `unavailable` のとき（2.6） | 後から入れたものの一覧を取得できなかったため、確認できなかった。「後から入れたものは無い」という意味ではない。理由の要約を含める |
+| `security_updates_cache` | `checks.staleness.security_updates.status` が `ok` のとき（2.7） | セキュリティ更新の数は、dnf が手元に持っているリポジトリ情報（最後に取得した時点のもの）にもとづき、最新とは限らない。Tojimari は取り直さない。最新にするには、先に `sudo dnf makecache` を実行する |
+| `security_updates_unavailable` | `checks.staleness.security_updates.status` が `unavailable` のとき（2.7） | リポジトリ情報を確認できなかったため、セキュリティ更新の有無は分からない。「更新なし」という意味ではない。理由の要約を含める |
+| `reboot_unknown` | `checks.staleness.reboot.status` が `unknown` のとき（2.7） | 再起動待ちかどうかを確認できなかった。「再起動待ちではない」という意味ではない。理由の要約を含める |
+| `last_update_unavailable` | `checks.staleness.last_update.status` が `unavailable` のとき（2.7） | dnf 履歴から最後に更新した日を確認できなかった。理由の要約を含める |
 
 - `scope`、`running_is_snapshot`、`not_root`、`history_fallback` は spec-1.1.md の「3. 表示の注意」にあたる
 - `running_is_snapshot` は、今動いているかの印をまだ出さない今回も出す（spec-1.1.md の 3 が「出力に必ず含める」としているため）
@@ -166,7 +170,7 @@ sudo python3 -B -m tojimari check --json   # JSON
 
 - 後で足す確認は、`checks` の下に新しいキーとして足す。予定しているキーは次のとおり
   - `user_installed`: 後から入れたもの（spec-1.1.md の 2.1）。2.6 に決めた（issue #12）
-  - `staleness`: 古さ（spec-1.1.md の 2.3）
+  - `staleness`: 古さ（spec-1.1.md の 2.3）。2.7 に決めた（issue #13）
 - 今動いているかの印（spec-1.1.md の 2.4）は、2.3 の版の要素に項目を足す形にする（予定する名前: `running`、`systemd_service`。どちらも真偽。中身はその issue で決める）
 - 読む側（表の出力、1.1 の直後の画面）は次を守る
   - `checks` にキーが無いことを「確認して何も無かった」と扱わず、「この版では確認していない」と扱う
@@ -207,6 +211,69 @@ issue #12 で決めた。判定のしかたと、取れないときの扱いの�
 - 重点リストに入っている名前でも、後から入れたものに当たれば、ここにも出す（重点リストは別枠のため）
 - `status` が `unavailable` のとき、`packages` が空であることを「後から入れたものは無い」と扱わない。読む側は `status` を先に見る
 - 今動いているかの印（1.1-C）は、2.5 のとおり後で版の要素に足す
+
+### 2.7 `checks.staleness`（古さ）
+
+issue #13 で決めた。取り方と、取れないときの扱いの要件は [task-issue-13.md](task-issue-13.md) の 3 にある。
+
+```json
+{
+  "security_updates": {
+    "status": "ok",
+    "total": 2,
+    "by_severity": {
+      "critical": 0,
+      "important": 1,
+      "moderate": 1,
+      "low": 0,
+      "unspecified": 0
+    },
+    "packages": [
+      {"name": "openssl-libs", "severity": "important"},
+      {"name": "vim-enhanced", "severity": "moderate"}
+    ]
+  },
+  "reboot": {
+    "status": "pending",
+    "running_kernel": "6.12.0-50.el10.aarch64",
+    "latest_kernel": "6.12.0-55.el10.aarch64"
+  },
+  "last_update": {
+    "status": "ok",
+    "at": "2026-11-20T10:00:00Z",
+    "days_ago": 2
+  }
+}
+```
+
+`security_updates`（セキュリティ更新）:
+
+| 項目 | 型 | 内容 |
+|---|---|---|
+| `status` | 文字列 | `ok`（dnf が手元に持っているリポジトリ情報で確認できた。0 件のときも `ok`）、`unavailable`（確認できなかった） |
+| `total` | 整数 または null | セキュリティ更新が出ている、入っているパッケージの名前の数（勧告の数ではない）。`unavailable` なら null |
+| `by_severity` | オブジェクト または null | 重要度ごとの名前の数。キーは `critical`、`important`、`moderate`、`low`、`unspecified`（重要度が書かれていないもの）で、いつも 5 つそろえる。1 つの名前はいちばん重い重要度にだけ数えるので、合計は `total` と一致する。`unavailable` なら null |
+| `packages` | 配列 | 名前（`name`）と重要度（`severity`。`by_severity` のキーと同じ書き方）。並びは重要度の重い順、同じ重要度の中では名前の昇順。`unavailable` なら空配列 |
+
+`reboot`（再起動待ち）:
+
+| 項目 | 型 | 内容 |
+|---|---|---|
+| `status` | 文字列 | `pending`（動いているカーネルより新しい `kernel` の版が入っている）、`not_pending`（動いている版が、入っている同じアーキテクチャの `kernel` の中でいちばん新しい）、`unknown`（確認できなかった） |
+| `running_kernel` | 文字列 または null | 動いているカーネル（`system.running_kernel` と同じ値） |
+| `latest_kernel` | 文字列 または null | 入っている同じアーキテクチャの `kernel` のうち、いちばん新しい版（`version-release.arch`。比べ方は rpm の決まり）。`unknown` のときは、取れていれば入れ、取れなければ null |
+
+`last_update`（最後に更新した日）:
+
+| 項目 | 型 | 内容 |
+|---|---|---|
+| `status` | 文字列 | `ok`（見つかった）、`none`（dnf 履歴は読めたが、パッケージの版を上げた処理の記録が無い）、`unavailable`（dnf 履歴を読めなかった） |
+| `at` | 文字列 または null | パッケージの版を上げた処理のうち、いちばん新しいものが終わった時刻（UTC、ISO 8601、秒まで、末尾 `Z`）。`ok` 以外は null |
+| `days_ago` | 整数 または null | `generated_at` から `at` まで何日たったか（切り捨て）。`ok` 以外は null |
+
+- 3 つは別々に取る。どれかが取れなくても、ほかは出す
+- `security_updates.status` が `unavailable` のとき、読む側は「更新なし」と扱わない。`reboot.status` が `unknown` のとき、「再起動待ちではない」と扱わない
+- 「パッケージの版を上げた処理」は、dnf 履歴で、版を上げる項目を 1 件以上含み、最後まで終わった処理（`dnf install` で依存の版が上がったものを含む）
 
 ## 3. 人が読む表
 
@@ -266,3 +333,31 @@ htop             3.3.0-5.el10        aarch64  epel
 - `status` が `unavailable` のときは、列の見出しを出さず「確認できませんでした」と出す。理由は `[注意]` の `user_installed_unavailable` に出す
 - 版が複数あるときは、2 行目からパッケージ名を空けて並べる（重点リストと同じ）
 - 取れなかった値は `-`、列の揃え方と装飾の決まりは 3.2 と同じ
+
+### 3.4 古さ（issue #13 で足した）
+
+後から入れたものの表の後、`[注意]` の前に出す（例の値は架空のもの）。
+
+```
+[古さ]
+セキュリティ更新    2 件（Critical 0、Important 1、Moderate 1、Low 0、重要度なし 0）
+  openssl-libs      Important
+  vim-enhanced      Moderate
+再起動待ち          再起動待ち（動いている 6.12.0-50.el10.aarch64、入っている最新 6.12.0-55.el10.aarch64）
+最後に更新した日    2026-11-20 10:00 UTC（2 日前）
+```
+
+- 行の見出しは「セキュリティ更新」「再起動待ち」「最後に更新した日」の 3 つで、この順に出す
+- セキュリティ更新
+  - `ok` のとき: 件数と重要度ごとの内訳を 1 行に出し、続けて名前と重要度を 1 行ずつ、字下げして出す。重要度の表記は `Critical`、`Important`、`Moderate`、`Low`、`重要度なし`
+  - 0 件のときは「0 件」とだけ出す（名前の行は出さない）
+  - `unavailable` のときは「確認できませんでした」と出す（「0 件」「更新なし」とは出さない）。理由は `[注意]` の `security_updates_unavailable` に出す
+  - 数が最後にリポジトリ情報を取得した時点のものであることは、`[注意]` の `security_updates_cache` に出す
+- 再起動待ち
+  - `pending` は「再起動待ち」、`not_pending` は「再起動待ちではない」、`unknown` は「確認できませんでした」と出す
+  - 括弧の中に、動いている版と入っている最新の版を出す。取れなかった値は `-`
+  - `unknown` の理由は `[注意]` の `reboot_unknown` に出す
+- 最後に更新した日
+  - `ok` は「YYYY-MM-DD HH:MM UTC（N 日前）」と出す
+  - `none` は「更新の記録がありません」、`unavailable` は「確認できませんでした」と出す。`unavailable` の理由は `[注意]` の `last_update_unavailable` に出す
+- 列の揃え方と装飾の決まりは 3.2 と同じ
