@@ -52,7 +52,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("tojimari: ", err)
 
     def test_dnf_failure_still_zero(self):
-        code, out, _ = run(["check", "--json"], FakeSystem(dnf=CommandError("timeout")))
+        code, out, _ = run(["check", "--json"], FakeSystem(dnf=CommandError("timeout", timeout=60)))
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(out)["checks"]["focus_packages"]["from_repo_available"])
 
@@ -83,7 +83,7 @@ class CliTest(unittest.TestCase):
 
     def test_security_failure_still_zero(self):
         for argv in (["check"], ["check", "--json"]):
-            code, out, _ = run(argv, FakeSystem(security={None: CommandError("timeout")}))
+            code, out, _ = run(argv, FakeSystem(security={None: CommandError("timeout", timeout=60)}))
             self.assertEqual(code, 0)
             self.assertIn("確認できませんでした" if argv == ["check"] else "security_updates_unavailable", out)
 
@@ -103,7 +103,7 @@ class CliTest(unittest.TestCase):
 
     def test_userinstalled_failure_still_zero(self):
         for argv in (["check"], ["check", "--json"]):
-            code, out, _ = run(argv, FakeSystem(userinstalled=CommandError("timeout")))
+            code, out, _ = run(argv, FakeSystem(userinstalled=CommandError("timeout", timeout=60)))
             self.assertEqual(code, 0)
             self.assertIn("確認できませんでした" if argv == ["check"] else "user_installed_unavailable", out)
 

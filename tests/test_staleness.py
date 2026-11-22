@@ -131,7 +131,9 @@ class SecurityCollectTest(unittest.TestCase):
         for kind, text in cases.items():
             with self.subTest(kind=kind):
                 data = dict(recorded.SECURITY_DEFAULT)
-                data[None] = CommandError(kind)
+                data[None] = CommandError(
+                    kind, timeout=60 if kind == "timeout" else None
+                )
                 _, sec, problem = self.collect(security=data)
                 self.assertEqual(sec["status"], "unavailable")
                 self.assertEqual(problem, text)
@@ -270,7 +272,7 @@ class IndependenceTest(unittest.TestCase):
 
     def test_security_fails_others_ok(self):
         data = dict(recorded.SECURITY_DEFAULT)
-        data[None] = CommandError("timeout")
+        data[None] = CommandError("timeout", timeout=60)
         st, problems = self.run_collect(security=data)
         self.assertEqual(st["security_updates"]["status"], "unavailable")
         self.assertEqual(st["reboot"]["status"], "not_pending")

@@ -7,7 +7,6 @@ from tojimari.runner import CommandError
 
 SEVERITY_KEYS = ("critical", "important", "moderate", "low", "unspecified")
 
-_DNF_TIMEOUT = 60
 _DNF_PARSE_REASON = "dnf の出力を読み取れなかった"
 _NO_RUNNING_KERNEL_REASON = "動いているカーネルを取得できなかった"
 _NO_SAME_ARCH_REASON = (
@@ -120,9 +119,7 @@ def _collect_security(system):
                     system.dnf_security_upgrades(severity)
                 )
     except CommandError as err:
-        return build_security_updates(None, {}), notices.command_reason(
-            "dnf", _DNF_TIMEOUT, err
-        )
+        return build_security_updates(None, {}), notices.command_reason("dnf", err)
     except packages.ParseError:
         return build_security_updates(None, {}), _DNF_PARSE_REASON
     return build_security_updates(names, by_severity), None

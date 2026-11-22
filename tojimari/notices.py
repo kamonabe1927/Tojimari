@@ -68,12 +68,14 @@ RUNNING_PARTIAL = (
 )
 
 
-def command_reason(tool: str, timeout: int, err) -> str:
+def command_reason(tool: str, err) -> str:
     """外部コマンドの失敗を、注意に入れる理由の文にする。標準エラー出力は入れない。"""
     if err.kind == "not_found":
         return f"{tool} コマンドが見つからない"
     if err.kind == "timeout":
-        return f"{tool} が {timeout} 秒で終わらなかった"
+        if err.timeout is None:
+            return f"{tool} が時間内に終わらなかった"
+        return f"{tool} が {err.timeout} 秒で終わらなかった"
     if err.kind == "exit_status":
         return f"{tool} が終了コード {err.returncode} で終わった"
     return f"{tool} を実行できなかった"

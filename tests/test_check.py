@@ -115,7 +115,7 @@ class FromRepoTest(unittest.TestCase):
     def test_command_errors(self):
         cases = [
             (CommandError("not_found"), "dnf コマンドが見つからない"),
-            (CommandError("timeout"), "dnf が 60 秒で終わらなかった"),
+            (CommandError("timeout", timeout=60), "dnf が 60 秒で終わらなかった"),
             (CommandError("exit_status", returncode=1), "dnf が終了コード 1 で終わった"),
             (CommandError("os_error"), "dnf を実行できなかった"),
         ]
@@ -284,7 +284,7 @@ class UserInstalledTest(unittest.TestCase):
     def test_unavailable(self):
         cases = [
             CommandError("not_found"),
-            CommandError("timeout"),
+            CommandError("timeout", timeout=60),
             CommandError("exit_status", returncode=1),
             CommandError("os_error"),
             "",
@@ -308,7 +308,7 @@ class UserInstalledTest(unittest.TestCase):
         def reason(value):
             r = check.collect(FakeSystem(userinstalled=value))
             return [n for n in r["notices"] if n["id"] == "user_installed_unavailable"][0]["message"]
-        self.assertIn("dnf が 60 秒で終わらなかった", reason(CommandError("timeout")))
+        self.assertIn("dnf が 60 秒で終わらなかった", reason(CommandError("timeout", timeout=60)))
         self.assertIn("dnf の出力に読み取れる行が無かった", reason(""))
         self.assertIn("dnf の出力が rpm の記録と突き合わなかった",
                       reason("zzz\t0\t1\t1\taarch64\tbaseos\n"))
@@ -401,7 +401,7 @@ class UserInstalledTest(unittest.TestCase):
 
     def test_focus_unchanged_when_userinstalled_fails(self):
         a = check.collect(FakeSystem())["checks"]["focus_packages"]
-        b = check.collect(FakeSystem(userinstalled=CommandError("timeout")))["checks"]["focus_packages"]
+        b = check.collect(FakeSystem(userinstalled=CommandError("timeout", timeout=60)))["checks"]["focus_packages"]
         self.assertEqual(a, b)
 
     def test_os_names_from_repo(self):
@@ -480,7 +480,7 @@ class StalenessCheckTest(unittest.TestCase):
 
     def test_notice_order(self):
         data = dict(recorded.SECURITY_DEFAULT)
-        data[None] = CommandError("timeout")
+        data[None] = CommandError("timeout", timeout=60)
         r = check.collect(
             FakeSystem(security=data, kernel=None,
                        last_upgrade=history.HistoryError("busy"),
@@ -505,7 +505,13 @@ class ErrorTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 with self.assertRaises(CheckError):
                     check.collect(
-                        FakeSystem(rpm=CommandError(kind, returncode=1 if kind == "exit_status" else None))
+                        FakeSystem(
+                            rpm=CommandError(
+                                kind,
+                                returncode=1 if kind == "exit_status" else None,
+                                timeout=30 if kind == "timeout" else None,
+                            )
+                        )
                     )
 
     def test_rpm_stderr_tail_in_message(self):
@@ -514,6 +520,28 @@ class ErrorTest(unittest.TestCase):
             check.collect(FakeSystem(rpm=err))
         self.assertIn("終了コード 1", str(cm.exception))
         self.assertIn("error: db", str(cm.exception))
+
+    def rpm_message(self, err):
+        with self.assertRaises(CheckError) as cm:
+            check.collect(FakeSystem(rpm=err))
+        return str(cm.exception)
+
+    def test_rpm_timeout_message(self):
+        msg = self.rpm_message(CommandError("timeout", timeout=30))
+        self.assertEqual(msg, "rpm の問い合わせが 30 秒で終わりませんでした")
+
+    def test_rpm_timeout_seconds_come_from_error(self):
+        msg = self.rpm_message(CommandError("timeout", timeout=7))
+        self.assertEqual(msg, "rpm の問い合わせが 7 秒で終わりませんでした")
+
+    def test_rpm_timeout_without_seconds(self):
+        msg = self.rpm_message(CommandError("timeout"))
+        self.assertEqual(msg, "rpm の問い合わせが時間内に終わりませんでした")
+        self.assertFalse(any(ch.isdigit() for ch in msg))
+
+    def test_rpm_timeout_stderr_tail(self):
+        msg = self.rpm_message(CommandError("timeout", timeout=30, stderr_tail="error: db"))
+        self.assertEqual(msg, "rpm の問い合わせが 30 秒で終わりませんでした\nerror: db")
 
     def test_rpm_parse_error(self):
         for text in (recorded.RPM_MALFORMED, ""):
@@ -623,7 +651,12 @@ class RunningTest(unittest.TestCase):
         }
         for kind, reason in reasons.items():
             with self.subTest(kind=kind):
-                err = CommandError(kind, returncode=1, stderr_tail="secret-ish text")
+                err = CommandError(
+                    kind,
+                    returncode=1,
+                    stderr_tail="secret-ish text",
+                    timeout=30 if kind == "timeout" else None,
+                )
                 r = check.collect(running_system(rpm_files=err))
                 self.assertEqual(r["checks"]["running_processes"]["status"], "unavailable")
                 n = [x for x in r["notices"] if x["id"] == "running_unavailable"]
@@ -638,7 +671,7 @@ class RunningTest(unittest.TestCase):
         self.assertIn("rpm の出力を読み取れなかった", n[0]["message"])
 
     def test_rpm_files_called_even_with_no_candidates(self):
-        fs = FakeSystem(rpm_files=CommandError("timeout"))
+        fs = FakeSystem(rpm_files=CommandError("timeout", timeout=30))
         r = check.collect(fs)
         self.assertTrue(fs.rpm_files_called)
         self.assertEqual(r["checks"]["running_processes"]["status"], "unavailable")
@@ -666,7 +699,7 @@ class RunningTest(unittest.TestCase):
         text = json.dumps(r, ensure_ascii=False)
         for word in ("fakeuser", "secret-tool", "7777", "7778", "7779", "fakename"):
             self.assertNotIn(word, text)
-        r = check.collect(FakeSystem(processes=make_scan(*procs), rpm_files=CommandError("timeout")))
+        r = check.collect(FakeSystem(processes=make_scan(*procs), rpm_files=CommandError("timeout", timeout=30)))
         text = json.dumps(r, ensure_ascii=False)
         for word in ("fakeuser", "secret-tool", "7777"):
             self.assertNotIn(word, text)
