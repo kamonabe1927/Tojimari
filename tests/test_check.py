@@ -3,8 +3,10 @@ import unittest
 from datetime import datetime, timezone
 
 from tests import recorded
-from tests.recorded import FakeSystem
-from tojimari import check, history
+from tests.recorded import (
+    FakeSystem, SELF_PID, SERVICE_CGROUP, make_proc, make_scan,
+)
+from tojimari import check, history, processes
 from tojimari.check import CheckError
 from tojimari.runner import CommandError
 
@@ -202,7 +204,8 @@ class ReportShapeTest(unittest.TestCase):
         self.assertEqual(r["generated_at"], "2026-11-21T09:39:12Z")
         self.assertRegex(r["generated_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(
-            list(r["checks"]), ["focus_packages", "user_installed", "staleness"]
+            list(r["checks"]),
+            ["focus_packages", "user_installed", "staleness", "running_processes"],
         )
         self.assertEqual(list(r["run"]), ["is_root"])
         self.assertEqual(list(r["system"]), ["running_kernel"])
@@ -219,20 +222,14 @@ class ReportShapeTest(unittest.TestCase):
     def test_entry_keys(self):
         r = check.collect(FakeSystem())
         base = ["name", "epoch", "version", "release", "arch", "evr", "from_repo"]
+        marks = ["running", "systemd_service"]
         for p in r["checks"]["focus_packages"]["packages"]:
             self.assertEqual(list(p), ["name", "reason", "status", "installed"])
             for v in p["installed"]:
                 if p["name"] == "kernel":
-                    self.assertEqual(list(v), base + ["is_running_kernel"])
+                    self.assertEqual(list(v), base + ["is_running_kernel"] + marks)
                 else:
-                    self.assertEqual(list(v), base)
-
-    def test_no_future_keys(self):
-        r = check.collect(FakeSystem())
-        for p in r["checks"]["focus_packages"]["packages"]:
-            for v in p["installed"]:
-                self.assertNotIn("running", v)
-                self.assertNotIn("systemd_service", v)
+                    self.assertEqual(list(v), base + marks)
 
 
 def ui(report):
@@ -263,7 +260,8 @@ class UserInstalledTest(unittest.TestCase):
         self.assertEqual(
             by["git"],
             {"name": "git", "epoch": None, "version": "2.47.1", "release": "1.el10",
-             "arch": "aarch64", "evr": "2.47.1-1.el10", "from_repo": "appstream"},
+             "arch": "aarch64", "evr": "2.47.1-1.el10", "from_repo": "appstream",
+             "running": False, "systemd_service": False},
         )
         self.assertEqual(by["openssl"]["epoch"], "1")
         self.assertEqual(by["openssl"]["evr"], "1:3.5.1-3.el10")
@@ -376,7 +374,8 @@ class UserInstalledTest(unittest.TestCase):
         for v in ui(r)["packages"]:
             self.assertEqual(
                 list(v),
-                ["name", "epoch", "version", "release", "arch", "evr", "from_repo"],
+                ["name", "epoch", "version", "release", "arch", "evr", "from_repo",
+                 "running", "systemd_service"],
             )
 
     def test_notice_order(self):
@@ -524,3 +523,156 @@ class ErrorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def ui_by_name(report):
+    return {p["name"]: p for p in report["checks"]["user_installed"]["packages"]}
+
+
+def marks_of(v):
+    return (v["running"], v["systemd_service"])
+
+
+def running_system(**kw):
+    procs = [
+        make_proc(10, exe="/usr/sbin/sshd", cgroup=SERVICE_CGROUP),
+        make_proc(11, exe="/usr/bin/htop"),
+        make_proc(100, exe="/usr/bin/sudo", ppid=50),
+        make_proc(SELF_PID, exe="/usr/bin/git", ppid=100),
+        make_proc(5001, exe="/usr/bin/bash", ppid=SELF_PID),
+    ]
+    return FakeSystem(processes=make_scan(*procs), **kw)
+
+
+class RunningTest(unittest.TestCase):
+    def test_default_no_processes(self):
+        fs = FakeSystem()
+        r = check.collect(fs)
+        self.assertEqual(r["checks"]["running_processes"], {"status": "ok", "unreadable": 0})
+        for p in r["checks"]["focus_packages"]["packages"]:
+            for v in p["installed"]:
+                self.assertEqual(marks_of(v), (False, False))
+        for v in ui_by_name(r).values():
+            self.assertEqual(marks_of(v), (False, False))
+        for n in ("running_unavailable", "running_partial"):
+            self.assertNotIn(n, notice_ids(r))
+        self.assertTrue(fs.rpm_files_called)
+
+    def test_marks(self):
+        r = check.collect(running_system())
+        self.assertEqual(r["checks"]["running_processes"], {"status": "ok", "unreadable": 0})
+        self.assertEqual(list(r["checks"]["running_processes"]), ["status", "unreadable"])
+        self.assertEqual(marks_of(pkg(r, "openssh-server")["installed"][0]), (True, True))
+        self.assertEqual(marks_of(pkg(r, "sudo")["installed"][0]), (True, False))
+        self.assertEqual(marks_of(pkg(r, "polkit")["installed"][0]), (False, False))
+        self.assertEqual(marks_of(ui_by_name(r)["htop"]), (True, False))
+        # Tojimari 自身（git の実行ファイルとして置いた）とその子には印が付かない
+        self.assertEqual(marks_of(ui_by_name(r)["git"]), (False, False))
+        self.assertEqual(marks_of(pkg(r, "kernel")["installed"][0]), (False, False))
+        self.assertNotIn("running_partial", notice_ids(r))
+
+    def test_systemd_package_marked_via_service(self):
+        procs = [make_proc(10, exe="/usr/lib/systemd/systemd-journald", cgroup=SERVICE_CGROUP),
+                 make_proc(1, exe="/usr/lib/systemd/systemd", cgroup="0::/init.scope\n")]
+        r = check.collect(FakeSystem(processes=make_scan(*procs)))
+        self.assertEqual(marks_of(pkg(r, "systemd")["installed"][0]), (True, True))
+
+    def test_unknown_path_ignored(self):
+        r = check.collect(FakeSystem(processes=make_scan(make_proc(10, exe="/opt/zzz"))))
+        self.assertEqual(r["checks"]["running_processes"]["status"], "ok")
+        self.assertFalse(any(
+            v["running"] for p in r["checks"]["focus_packages"]["packages"] for v in p["installed"]
+        ))
+
+    def test_partial(self):
+        procs = [make_proc(10, exe_error="permission"), make_proc(11, root_error="permission"),
+                 make_proc(12, exe_error="gone")]
+        r = check.collect(FakeSystem(processes=make_scan(*procs)))
+        self.assertEqual(r["checks"]["running_processes"], {"status": "ok", "unreadable": 2})
+        n = [x for x in r["notices"] if x["id"] == "running_partial"]
+        self.assertEqual(len(n), 1)
+        self.assertIn("2 個", n[0]["message"])
+
+    def test_scan_error(self):
+        fs = FakeSystem(processes=processes.ScanError("x"))
+        r = check.collect(fs)
+        self.assertEqual(r["checks"]["running_processes"], {"status": "unavailable", "unreadable": None})
+        self.assertFalse(fs.rpm_files_called)
+        for p in r["checks"]["focus_packages"]["packages"]:
+            for v in p["installed"]:
+                self.assertEqual(marks_of(v), (None, None))
+        for v in ui_by_name(r).values():
+            self.assertEqual(marks_of(v), (None, None))
+        n = [x for x in r["notices"] if x["id"] == "running_unavailable"]
+        self.assertEqual(len(n), 1)
+        self.assertIn("/proc を読み取れなかった", n[0]["message"])
+        self.assertNotIn("running_partial", notice_ids(r))
+        # ほかの確認はそのまま
+        base = check.collect(FakeSystem())
+        self.assertEqual(r["checks"]["staleness"], base["checks"]["staleness"])
+        self.assertEqual(
+            [p["name"] for p in r["checks"]["focus_packages"]["packages"]],
+            [p["name"] for p in base["checks"]["focus_packages"]["packages"]],
+        )
+
+    def test_rpm_files_command_errors(self):
+        reasons = {
+            "timeout": "rpm が 30 秒で終わらなかった",
+            "exit_status": "rpm が終了コード 1 で終わった",
+            "not_found": "rpm コマンドが見つからない",
+        }
+        for kind, reason in reasons.items():
+            with self.subTest(kind=kind):
+                err = CommandError(kind, returncode=1, stderr_tail="secret-ish text")
+                r = check.collect(running_system(rpm_files=err))
+                self.assertEqual(r["checks"]["running_processes"]["status"], "unavailable")
+                n = [x for x in r["notices"] if x["id"] == "running_unavailable"]
+                self.assertIn(reason, n[0]["message"])
+                self.assertNotIn("secret-ish", n[0]["message"])
+                self.assertIsNone(pkg(r, "sudo")["installed"][0]["running"])
+
+    def test_rpm_files_parse_error(self):
+        r = check.collect(running_system(rpm_files="garbage\n"))
+        self.assertEqual(r["checks"]["running_processes"], {"status": "unavailable", "unreadable": None})
+        n = [x for x in r["notices"] if x["id"] == "running_unavailable"]
+        self.assertIn("rpm の出力を読み取れなかった", n[0]["message"])
+
+    def test_rpm_files_called_even_with_no_candidates(self):
+        fs = FakeSystem(rpm_files=CommandError("timeout"))
+        r = check.collect(fs)
+        self.assertTrue(fs.rpm_files_called)
+        self.assertEqual(r["checks"]["running_processes"]["status"], "unavailable")
+
+    def test_notice_order(self):
+        r = check.collect(FakeSystem(
+            processes=make_scan(make_proc(10, exe_error="permission")),
+            last_upgrade=history.HistoryError("not_found"),
+            root=False,
+        ))
+        ids = notice_ids(r)
+        self.assertEqual(ids[-2:], ["last_update_unavailable", "running_partial"])
+        r = check.collect(FakeSystem(
+            processes=processes.ScanError("x"), last_upgrade=history.HistoryError("not_found"),
+        ))
+        self.assertEqual(notice_ids(r)[-2:], ["last_update_unavailable", "running_unavailable"])
+
+    def test_no_paths_or_pids_in_output(self):
+        import json
+
+        procs = [make_proc(7777, exe="/home/fakeuser/secret-tool", exe_error=None),
+                 make_proc(7778, exe_error="permission"),
+                 make_proc(7779, exe="/usr/sbin/sshd", cgroup="0::/system.slice/fakename.service\n")]
+        r = check.collect(FakeSystem(processes=make_scan(*procs)))
+        text = json.dumps(r, ensure_ascii=False)
+        for word in ("fakeuser", "secret-tool", "7777", "7778", "7779", "fakename"):
+            self.assertNotIn(word, text)
+        r = check.collect(FakeSystem(processes=make_scan(*procs), rpm_files=CommandError("timeout")))
+        text = json.dumps(r, ensure_ascii=False)
+        for word in ("fakeuser", "secret-tool", "7777"):
+            self.assertNotIn(word, text)
+
+    def test_snapshot_notice_text(self):
+        r = check.collect(FakeSystem())
+        msg = [n for n in r["notices"] if n["id"] == "running_is_snapshot"][0]["message"]
+        self.assertIn("Docker コンテナの中で動いているものには印を付けません。", msg)
+        self.assertIn("再起動していないプロセスは、新しい版の印として出ます。", msg)

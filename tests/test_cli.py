@@ -69,7 +69,8 @@ class CliTest(unittest.TestCase):
         _, out, _ = run(["check", "--json"])
         data = json.loads(out)
         self.assertEqual(
-            list(data["checks"]), ["focus_packages", "user_installed", "staleness"]
+            list(data["checks"]),
+            ["focus_packages", "user_installed", "staleness", "running_processes"],
         )
         self.assertEqual(
             data["checks"]["staleness"],

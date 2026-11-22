@@ -7,6 +7,8 @@ STATUS_LABEL = {"installed": "入っている", "not_installed": "入ってい�
 HEADERS = ["パッケージ", "状態", "バージョン", "アーキ", "入れた元"]
 USER_INSTALLED_HEADERS = ["パッケージ", "バージョン", "アーキ", "入れた元"]
 RUNNING_MARK = "<- 動いている"
+PROCESS_MARK = "<- 今動いている"
+SERVICE_MARK = "<- 今動いている（systemd のサービス）"
 
 
 def display_width(text: str) -> int:
@@ -22,14 +24,26 @@ def _format_time(generated_at: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _focus_rows(focus: dict) -> list[tuple[list[str], bool]]:
-    """(5 列の文字列, 動いている印を付けるか) の並び。"""
+def _mark_text(version: dict, kernel: bool = False) -> str:
+    """版の要素に付ける印の文字列（無ければ空）。kernel の印を先にする。"""
+    marks = []
+    if kernel and version.get("is_running_kernel"):
+        marks.append(RUNNING_MARK)
+    if version.get("systemd_service"):
+        marks.append(SERVICE_MARK)
+    elif version.get("running"):
+        marks.append(PROCESS_MARK)
+    return "  ".join(marks)
+
+
+def _focus_rows(focus: dict) -> list[tuple[list[str], str]]:
+    """(5 列の文字列, 行の終わりに付ける印の文字列) の並び。"""
     rows = []
     for pkg in focus.get("packages", []):
         label = STATUS_LABEL.get(pkg["status"], pkg["status"])
         versions = pkg.get("installed", [])
         if not versions:
-            rows.append(([pkg["name"], label, "-", "", ""], False))
+            rows.append(([pkg["name"], label, "-", "", ""], ""))
             continue
         for i, v in enumerate(versions):
             rows.append(
@@ -41,7 +55,7 @@ def _focus_rows(focus: dict) -> list[tuple[list[str], bool]]:
                         v["arch"],
                         v["from_repo"] if v.get("from_repo") is not None else "-",
                     ],
-                    bool(v.get("is_running_kernel")),
+                    _mark_text(v, kernel=True),
                 )
             )
     return rows
@@ -75,8 +89,10 @@ def _user_installed_lines(ui: dict) -> list[str]:
     if not pkgs:
         return [title, "該当なし"]
     rows = []
+    marks = []
     prev = None
     for p in pkgs:
+        marks.append(_mark_text(p))
         rows.append(
             [
                 p["name"] if p["name"] != prev else "",
@@ -86,7 +102,11 @@ def _user_installed_lines(ui: dict) -> list[str]:
             ]
         )
         prev = p["name"]
-    return [title, *_format_rows(USER_INSTALLED_HEADERS, rows)]
+    formatted = _format_rows(USER_INSTALLED_HEADERS, rows)
+    lines = [formatted[0]]
+    for line, mark in zip(formatted[1:], marks):
+        lines.append(line + "  " + mark if mark else line)
+    return [title, *lines]
 
 
 SEVERITY_LABEL = {
@@ -174,9 +194,9 @@ def render_table(report: dict) -> str:
         rows = _focus_rows(focus)
         formatted = _format_rows(HEADERS, [cells for cells, _ in rows])
         lines.append(formatted[0])
-        for line, (_, running) in zip(formatted[1:], rows):
-            if running:
-                line += "  " + RUNNING_MARK
+        for line, (_, mark) in zip(formatted[1:], rows):
+            if mark:
+                line += "  " + mark
             lines.append(line)
         kernel = report.get("system", {}).get("running_kernel")
         lines.append(f"動いているカーネル: {kernel if kernel is not None else '-'}")

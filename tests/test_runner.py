@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from tests import recorded
-from tojimari import history, runner
+from tojimari import history, packages, processes, runner
 from tojimari.history import HistoryError
 from tojimari.runner import CommandError, System, read_history_db, run_command
 
@@ -274,3 +274,178 @@ class SystemHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeProc:
+    """一時ディレクトリに架空の /proc の木を作る。"""
+
+    def __init__(self, case):
+        self.dir = tempfile.mkdtemp()
+        case.addCleanup(self._cleanup)
+        self.root = os.path.join(self.dir, "myroot")
+        self.other = os.path.join(self.dir, "otherroot")
+        self.proc = os.path.join(self.dir, "proc")
+        for d in (self.root, self.other, self.proc):
+            os.mkdir(d)
+
+    def _cleanup(self):
+        import shutil
+
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def add(self, name, stat="1 (x) S 0\n", exe="/usr/bin/example", root=None, cgroup="0::/\n"):
+        d = os.path.join(self.proc, name)
+        os.mkdir(d)
+        if stat is not None:
+            with open(os.path.join(d, "stat"), "w") as f:
+                f.write(stat)
+        if cgroup is not None:
+            with open(os.path.join(d, "cgroup"), "w") as f:
+                f.write(cgroup)
+        if exe is not None:
+            os.symlink(exe, os.path.join(d, "exe"))
+        os.symlink(root or self.root, os.path.join(d, "root"))
+        # 読んではいけないファイル
+        for secret in ("cmdline", "environ"):
+            with open(os.path.join(d, secret), "w") as f:
+                f.write("dummy")
+        return d
+
+    def tree(self):
+        out = []
+        for base, dirs, files in os.walk(self.dir):
+            out.extend(os.path.join(base, n) for n in dirs + files)
+        return sorted(out)
+
+
+class ScanProcessesTest(unittest.TestCase):
+    def setUp(self):
+        self.fp = FakeProc(self)
+
+    def scan(self):
+        return runner.scan_processes(self.fp.proc, self.fp.root)
+
+    def test_reads_values(self):
+        self.fp.add("12", stat="12 (a) S 1 0\n", exe="/opt/a/bin", cgroup="0::/system.slice/a.service\n")
+        self.fp.add("7", exe="/opt/b/bin", root=self.fp.other)
+        scan = self.scan()
+        self.assertIsInstance(scan, processes.ProcessScan)
+        self.assertEqual(scan.self_pid, os.getpid())
+        st = os.stat(self.fp.root)
+        self.assertEqual(scan.own_root, (st.st_dev, st.st_ino))
+        self.assertEqual([p.pid for p in scan.processes], [7, 12])
+        p7, p12 = scan.processes
+        self.assertEqual(p12.stat, "12 (a) S 1 0\n")
+        self.assertEqual(p12.exe, "/opt/a/bin")
+        self.assertIsNone(p12.exe_error)
+        self.assertEqual(p12.root, scan.own_root)
+        self.assertIsNone(p12.root_error)
+        self.assertEqual(p12.cgroup, "0::/system.slice/a.service\n")
+        other = os.stat(self.fp.other)
+        self.assertEqual(p7.root, (other.st_dev, other.st_ino))
+        self.assertNotEqual(p7.root, scan.own_root)
+
+    def test_non_numeric_names_skipped(self):
+        self.fp.add("1")
+        for name in ("self", "sys", "12a", "-3"):
+            os.mkdir(os.path.join(self.fp.proc, name))
+        with open(os.path.join(self.fp.proc, "version"), "w") as f:
+            f.write("x")
+        self.assertEqual([p.pid for p in self.scan().processes], [1])
+
+    def test_exe_missing_is_gone(self):
+        self.fp.add("5", exe=None)
+        p = self.scan().processes[0]
+        self.assertIsNone(p.exe)
+        self.assertEqual(p.exe_error, "gone")
+
+    def test_broken_root_link_is_gone(self):
+        self.fp.add("5", root=os.path.join(self.fp.dir, "missing"))
+        p = self.scan().processes[0]
+        self.assertIsNone(p.root)
+        self.assertEqual(p.root_error, "gone")
+
+    def test_stat_and_cgroup_unreadable_are_none(self):
+        self.fp.add("5", stat=None, cgroup=None)
+        p = self.scan().processes[0]
+        self.assertIsNone(p.stat)
+        self.assertIsNone(p.cgroup)
+        self.assertEqual(p.exe, "/usr/bin/example")
+
+    def test_non_utf8_replaced(self):
+        d = self.fp.add("5")
+        with open(os.path.join(d, "stat"), "wb") as f:
+            f.write(b"5 (\xff\xfe) S 1\n")
+        self.assertIn("\ufffd", self.scan().processes[0].stat)
+
+    def test_error_kinds(self):
+        self.fp.add("5")
+        real_readlink, real_stat = os.readlink, os.stat
+        cases = [
+            (FileNotFoundError(), "gone"),
+            (ProcessLookupError(), "gone"),
+            (PermissionError(), "permission"),
+            (OSError(), "other"),
+        ]
+        for exc, kind in cases:
+            with self.subTest(exc=type(exc).__name__):
+                def fake_readlink(p, *a, **kw):
+                    if str(p).endswith("/exe"):
+                        raise exc
+                    return real_readlink(p, *a, **kw)
+
+                def fake_stat(p, *a, **kw):
+                    if str(p).endswith("/root"):
+                        raise exc
+                    return real_stat(p, *a, **kw)
+
+                with mock.patch("tojimari.runner.os.readlink", side_effect=fake_readlink), \
+                        mock.patch("tojimari.runner.os.stat", side_effect=fake_stat):
+                    p = self.scan().processes[0]
+                self.assertEqual((p.exe, p.exe_error), (None, kind))
+                self.assertEqual((p.root, p.root_error), (None, kind))
+
+    def test_proc_dir_missing(self):
+        with self.assertRaises(processes.ScanError):
+            runner.scan_processes(os.path.join(self.fp.dir, "none"), self.fp.root)
+
+    def test_root_dir_missing(self):
+        with self.assertRaises(processes.ScanError):
+            runner.scan_processes(self.fp.proc, os.path.join(self.fp.dir, "none"))
+
+    def test_listdir_permission(self):
+        with mock.patch("tojimari.runner.os.listdir", side_effect=PermissionError()):
+            with self.assertRaises(processes.ScanError):
+                self.scan()
+
+    def test_does_not_read_cmdline_or_environ(self):
+        self.fp.add("5")
+        real_open = open
+        opened = []
+
+        def spy(path, *a, **kw):
+            opened.append(str(path))
+            return real_open(path, *a, **kw)
+
+        with mock.patch("tojimari.runner.open", spy, create=True):
+            self.scan()
+        self.assertTrue(opened)
+        self.assertFalse([p for p in opened if p.endswith(("cmdline", "environ"))])
+
+    def test_writes_nothing(self):
+        self.fp.add("5")
+        self.fp.add("6", exe=None)
+        before = self.fp.tree()
+        self.scan()
+        self.assertEqual(self.fp.tree(), before)
+
+    def test_system_delegates(self):
+        sentinel = object()
+        with mock.patch("tojimari.runner.scan_processes", return_value=sentinel) as m:
+            self.assertIs(System().process_scan(), sentinel)
+        m.assert_called_once_with()
+
+    def test_rpm_files_argv(self):
+        with mock.patch("tojimari.runner.run_command", return_value="x") as m:
+            self.assertEqual(System().rpm_files(), "x")
+        m.assert_called_once_with(packages.RPM_FILES_ARGV, runner.RPM_TIMEOUT)

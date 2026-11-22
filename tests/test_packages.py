@@ -212,3 +212,86 @@ class FormatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RpmFilesTest(unittest.TestCase):
+    def test_argv(self):
+        self.assertEqual(
+            packages.RPM_FILES_ARGV,
+            [
+                "/usr/bin/rpm",
+                "-qa",
+                "--queryformat",
+                "P\\t%{NAME}\\t%|EPOCH?{%{EPOCH}}:{}|\\t%{VERSION}\\t%{RELEASE}\\t%{ARCH}\\n"
+                "[F\\t%{FILENAMES}\\n]",
+            ],
+        )
+
+    TEXT = (
+        "P\tpkga\t\t1.0\t1.el10\taarch64\n"
+        "F\t/usr/bin/a\n"
+        "F\t/usr/share/doc/pkga/README\n"
+        "P\tpkgb\t2\t3.0\t1.el10\taarch64\n"
+        "P\tpkgc\t\t1.0\t1.el10\taarch64\n"
+        "F\t/usr/bin/a\n"
+    )
+    KA = ("pkga", "0", "1.0", "1.el10", "aarch64")
+    KB = ("pkgb", "2", "3.0", "1.el10", "aarch64")
+    KC = ("pkgc", "0", "1.0", "1.el10", "aarch64")
+
+    def test_normal_and_wanted_only(self):
+        r = packages.parse_rpm_files(self.TEXT, {"/usr/bin/a"})
+        self.assertEqual(r, {"/usr/bin/a": frozenset({self.KA, self.KC})})
+
+    def test_unwanted_path_not_kept(self):
+        self.assertEqual(packages.parse_rpm_files(self.TEXT, {"/nope"}), {})
+
+    def test_version_without_files(self):
+        r = packages.parse_rpm_files("P\tpkgb\t2\t3.0\t1.el10\taarch64\n", {"/x"})
+        self.assertEqual(r, {})
+
+    def test_epoch_key(self):
+        r = packages.parse_rpm_files(
+            "P\tpkgb\t2\t3.0\t1.el10\taarch64\nF\t/x\n", {"/x"}
+        )
+        self.assertEqual(r, {"/x": frozenset({self.KB})})
+
+    def test_blank_lines_skipped(self):
+        r = packages.parse_rpm_files("\nP\tpkga\t\t1.0\t1.el10\taarch64\n\nF\t/x\n\n", {"/x"})
+        self.assertEqual(r, {"/x": frozenset({self.KA})})
+
+    def test_no_trailing_newline(self):
+        r = packages.parse_rpm_files("P\tpkga\t\t1.0\t1.el10\taarch64\nF\t/x", {"/x"})
+        self.assertEqual(r, {"/x": frozenset({self.KA})})
+
+    def test_path_with_spaces_kept_as_is(self):
+        r = packages.parse_rpm_files(
+            "P\tpkga\t\t1.0\t1.el10\taarch64\nF\t/a b/c\n", {"/a b/c"}
+        )
+        self.assertEqual(list(r), ["/a b/c"])
+
+    def test_parse_errors(self):
+        good = "P\tpkga\t\t1.0\t1.el10\taarch64\n"
+        cases = {
+            "unknown line": good + "X\tfoo\n",
+            "line without tab": good + "foo\n",
+            "P fields short": "P\tpkga\t\t1.0\t1.el10\n",
+            "P fields long": "P\tpkga\t\t1.0\t1.el10\taarch64\textra\n",
+            "empty name": "P\t\t\t1.0\t1.el10\taarch64\n",
+            "empty version": "P\tpkga\t\t\t1.el10\taarch64\n",
+            "empty release": "P\tpkga\t\t1.0\t\taarch64\n",
+            "epoch not digit": "P\tpkga\tx\t1.0\t1.el10\taarch64\n",
+            "F before P": "F\t/x\n" + good,
+            "no P": "",
+            "only blank": "\n\n",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(ParseError):
+                    packages.parse_rpm_files(text, {"/x"})
+
+    def test_recorded(self):
+        r = packages.parse_rpm_files(recorded.RPM_FILES, {"/usr/sbin/sshd", "/zzz"})
+        self.assertEqual(
+            r, {"/usr/sbin/sshd": frozenset({("openssh-server", "0", "9.9p1", "7.el10", "aarch64")})}
+        )
