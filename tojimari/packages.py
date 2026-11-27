@@ -137,6 +137,15 @@ def version_key(name, epoch, version, release, arch) -> tuple:
     return (name, epoch if epoch else "0", version, release, arch)
 
 
+def paths_owned_by(file_map, name: str) -> frozenset[str]:
+    """file_map のうち、名前が name の版を 1 つでも持つパスの集まり。"""
+    return frozenset(
+        path
+        for path, keys in file_map.items()
+        if any(key[0] == name for key in keys)
+    )
+
+
 def parse_dnf_from_repo(text: str) -> dict[tuple, str | None]:
     result: dict[tuple, str | None] = {}
     for line in text.split("\n"):

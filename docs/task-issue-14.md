@@ -54,6 +54,7 @@
      - マウントの名前空間が違うだけのもの（`PrivateTmp=` などのある systemd のサービス）は、ルートが同じなので結びつける
      - ルートが権限で読めないプロセスは結びつけず、読めなかった数（3.3 の 3）に数える
    - Tojimari の親や祖先（`sudo`、ログインのシェルなど）は除かない。要件の「Tojimari 自身とその子プロセス」に当たらず、祖先をまとめて除くとホストの `sshd` などまで外れるため。そのため `sudo` で実行すると、重点リストの `sudo` には「今動いている」の印が付く。実際にその瞬間に動いているので誤りではなく、output-1.1.md の 2.8 にそのことを書く
+     - #26 で変えた（2026-11-27、本人の依頼）: Tojimari を起動した `sudo` までの親の列は結びつけない。それより上の祖先を除かないことは変わらない。[task-issue-26.md](task-issue-26.md) の 3.1
 4. 実行ファイルのパスの末尾に ` (deleted)` が付いているとき（更新で入れ替わった古い実行ファイルが動いているとき）は、その印を取り除いたパスで調べ、今そのパスを持つパッケージの版に印を付ける
    - 理由: 更新した後に再起動していないサービス（sshd など）は、まさに確かめたい対象で、印が消えると「動いていない」ように見えてしまうため
    - そのため「今動いている」は「その版の実行ファイルのパスで動いているプロセスがある」という意味で、動いているのが更新前の中身である場合も含む。このことは output-1.1.md の 2.8 に書く。更新前の中身かどうかを見分けて出すことは今回はしない（spec-1.1.md の 2.4 の外）
@@ -101,7 +102,7 @@
   - 実行ファイルからパッケージの版への結びつけ、複数の版が同じパスを持つとき（両方に印）、どのパッケージも持たないパス
   - `systemd_service`: システムのサービス、`Delegate=yes` の子の cgroup（`/system.slice/<名前>.service/<子>`）、利用者のセッション、`user@*.service` の下、cgroup が読めないとき
   - 除くもの: 実行ファイルの無いもの、終わったもの、Tojimari 自身、違うルートディレクトリ（`st_dev` か `st_ino` が違う）
-  - 除かないもの: マウントの名前空間だけが違う（ルートが同じ）プロセス、Tojimari の親（`sudo`）
+  - 除かないもの: マウントの名前空間だけが違う（ルートが同じ）プロセス、Tojimari の親（`sudo`）（#26 で変えた。親の `sudo` は除く。[task-issue-26.md](task-issue-26.md) の 3.4）
   - ルートディレクトリが読めないプロセス（結びつけず、`unreadable` に数える）
   - ` (deleted)` の付いたパス
   - 権限が無くて読めないプロセスがあるとき（数と `running_partial` の注意）
@@ -135,7 +136,7 @@
 | 手順 | コマンド | 正しいときの表示 |
 |---|---|---|
 | 1 | `systemctl is-active sshd` | `active`（sshd が動いていること。動いていなければ、本人の判断で `sudo systemctl start sshd` してから進める。Tojimari は実行しない） |
-| 2 | `sudo python3 -B -m tojimari check` | 重点リストの `openssh-server` の行に「今動いている」と「systemd のサービス」の印が付く。`systemd`（`/usr/lib/systemd/systemd`）にも印が付く。`sudo` の行には「今動いている」が付く（Tojimari を動かしている `sudo` 自身が動いているため。3.1 の 3 のとおり除かない） |
+| 2 | `sudo python3 -B -m tojimari check` | 重点リストの `openssh-server` の行に「今動いている」と「systemd のサービス」の印が付く。`systemd`（`/usr/lib/systemd/systemd`）にも印が付く。`sudo` の行には「今動いている」が付く（Tojimari を動かしている `sudo` 自身が動いているため。3.1 の 3 のとおり除かない。#26 で変えた: ほかに `sudo` が動いていなければ付かない。[task-issue-26.md](task-issue-26.md) の 7） |
 | 3 | `sudo python3 -B -m tojimari check --json` | `checks.running_processes.status` が `ok`、`unreadable` が 0。`openssh-server` の版の `running` と `systemd_service` が true |
 | 4 | `sudo cat /proc/$(pgrep -o -x sshd)/cgroup` | `0::/system.slice/sshd.service` のような 1 行（3.2 の見分け方の前提の確かめ） |
 | 5 | `rpm -qf /usr/sbin/sshd` | `openssh-server-...`（パスから期待するパッケージが返る） |
