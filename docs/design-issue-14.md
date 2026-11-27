@@ -6,6 +6,7 @@
 - 土台: [design-issue-5.md](design-issue-5.md)、[design-issue-12.md](design-issue-12.md)、[design-issue-13.md](design-issue-13.md)（分け方はそのまま守る）
 
 差し戻しは無い。PM が直した要件（ルートディレクトリで見分ける、サービスの判定、`sudo` の親を除かない）で設計できる。
+#26 で変えた（2026-11-27）: Tojimari を起動した `sudo` までの親の列は除く。そのために rpm の記録を引く順番と `classify` の引数も変えた。変えた所には「#26 で変えた」と書いてある。設計は [design-issue-26.md](design-issue-26.md)。
 この文書の例に出てくるパス、pid、cgroup のパスはすべて架空のもの。
 
 ## 1. 全体の形
@@ -22,6 +23,7 @@ check.collect
 - `runner.py` は実行と読み取りだけ（解釈しない）。解釈は新しい `tojimari/processes.py` に置く。`processes.py` は何も実行せず、`/proc` も読まない
 - 順番は「見回し → rpm」。見回しが失敗したら rpm は呼ばない（数秒かかる呼び出しを無駄にしない）。Tojimari は外部コマンドを 1 つずつ終わるまで待つので、見回しの瞬間に Tojimari の子プロセスは居ない見込みだが、要件どおり除く処理は入れる（4.4）
 - 新しい依存は無い。使うのは `os` と、#5 と同じ `/usr/bin/rpm` だけ
+- #26 で変えた: 順番は「見回し → rpm → `classify`」。rpm で引くのは、候補のパスではなく、実行ファイルを読めたすべてのプロセスのパス。`classify` には `sudo` のパッケージが持つパスを渡す（[design-issue-26.md](design-issue-26.md) の 2）
 
 ## 2. 実行ファイルからパッケージの版を引く方法（決め直し）
 
@@ -124,7 +126,7 @@ class ScanError(Exception):
 
 | 順 | 条件 | 扱い |
 |---|---|---|
-| 1 | pid が `self_pid`、または ppid をたどると `self_pid` に着く（4.4） | 除く。数えない |
+| 1 | pid が `self_pid`、または ppid をたどると `self_pid` に着く（4.4）。#26 で足した: Tojimari を起動した `sudo` までの親の列にある（[design-issue-26.md](design-issue-26.md) の 3） | 除く。数えない |
 | 2 | `stat` が読めて、カーネルのスレッドかゾンビ（4.2） | 除く。数えない |
 | 3 | `exe_error` が `"gone"` | 除く。数えない（見回しているあいだに終わったもの。`stat` が読めなかったカーネルのスレッドもここに入る） |
 | 4 | `exe_error` が `"permission"` か `"other"` | `unreadable` に 1 足す。結びつけない |
@@ -166,6 +168,7 @@ class ScanError(Exception):
 - 自分: `ProcessScan.self_pid`（`os.getpid()`）と同じ pid
 - 子孫: `stat` が読めたプロセスの `pid → ppid` の表を作り、各プロセスから ppid を上へたどる。`self_pid` に着けば子孫。ppid が 0、表に無い、または表の大きさの回数たどっても着かなければ子孫でない（輪になっていても止まる）
 - 親や祖先（`sudo`、シェル）は除かない。たどるのは下から上への向きで、`self_pid` より上は見ない
+  - #26 で変えた: `self_pid` から上へもたどり、いちばん近い `sudo` までの列と、その上に続く `sudo` を除く。`sudo` が無ければ親や祖先は除かない。列より上の祖先を除かないことは変わらない（[design-issue-26.md](design-issue-26.md) の 3）
 - `stat` が読めなかったプロセスは ppid が分からないので、子孫として除けない。Tojimari の子は同じ利用者で動くので `stat` は読める見込みで、また 1 の順番のとおり見回しの瞬間に子は居ない見込み
 
 ### 4.5 ` (deleted)` の扱い
@@ -306,6 +309,8 @@ def _collect_running(system) -> tuple[dict | None, dict, str | None]:
 3. `system.rpm_files()` → `packages.parse_rpm_files(text, 候補のパスの集まり)`。`CommandError` と `ParseError` は 2.3 のとおり `unavailable`。候補が 0 個でも rpm は呼ぶ（rpm に問い合わせられないのに `ok` と出さないため）
 4. `processes.build_marks` → `({...}, {"status": "ok", "unreadable": 数}, None)`
 
+#26 で変えた: 2 と 3 の順番を入れ替え、`classify(scan, sudo_paths)` にした。rpm で引くパスは `processes.exe_paths(scan)`（[design-issue-26.md](design-issue-26.md) の 4）。
+
 守ること:
 
 - 実行ファイルのパス、pid、cgroup のパスを、JSON、表、注意、例外の文のどれにも入れない
@@ -325,7 +330,7 @@ def _collect_running(system) -> tuple[dict | None, dict, str | None]:
 
 - `parse_stat`: 普通の行、プロセス名に空白と `)` を含む行、形が合わない行（`None`）
 - `classify`
-  - 結びつける: 同じルートの普通のプロセス。マウントの名前空間だけが違う想定のもの（ルートの値が同じ）。Tojimari の親（`self_pid` の ppid にあたる `sudo`）と、そのまた親
+  - 結びつける: 同じルートの普通のプロセス。マウントの名前空間だけが違う想定のもの（ルートの値が同じ）。Tojimari の親（`self_pid` の ppid にあたる `sudo`）と、そのまた親（#26 で変えた: 親の `sudo` は除く。`sudo` を経ない形の親と祖先は結びつける。[design-issue-26.md](design-issue-26.md) の 6.1）
   - 除く（数えない）: `self_pid`、`self_pid` の子と孫（ppid をたどる）、カーネルのスレッド（flags）、ゾンビ（状態 `Z`）、`exe_error` が `gone`、`root_error` が `gone`、ルートが違う（`st_dev` だけ違う、`st_ino` だけ違う、の両方）
   - `unreadable` に数える: `exe_error` が `permission`、`root_error` が `permission`、両方が `permission` のとき 1 回だけ数える、`other`
   - root なしを想定した場合: カーネルのスレッドの `exe_error` が `permission` でも数えない
@@ -349,7 +354,7 @@ def _collect_running(system) -> tuple[dict | None, dict, str | None]:
 
 `tests/test_check.py`、`tests/test_table.py`:
 
-- sshd にあたるプロセス（サービス）と htop にあたるプロセス（セッション）を渡し、JSON の版の `running`・`systemd_service` と、`checks.running_processes` の形（キーと順）、表の印を確かめる。`sudo` を親に持つ `self_pid` を渡し、`sudo` の版の `running` が真で、Tojimari 自身の実行ファイルの版には印が付かないこと
+- sshd にあたるプロセス（サービス）と htop にあたるプロセス（セッション）を渡し、JSON の版の `running`・`systemd_service` と、`checks.running_processes` の形（キーと順）、表の印を確かめる。`sudo` を親に持つ `self_pid` を渡し、`sudo` の版の `running` が真で、Tojimari 自身の実行ファイルの版には印が付かないこと（#26 で変えた: 親の `sudo` だけなら `sudo` の版の `running` は偽。祖先でない `sudo` が別にあれば真。[design-issue-26.md](design-issue-26.md) の 6.3 と 6.4）
 - `unreadable` が 1 以上のとき `running_partial` の注意と数、0 のとき注意が出ない
 - `ScanError` のとき: `unavailable`、`unreadable` が `null`、各版の印が `null`、`running_unavailable` の注意、`rpm_files` が呼ばれない、ほかの確認の結果はそのまま、表に印が無い
 - `rpm_files` が `CommandError`（`timeout`、`exit_status`、`not_found`）、形の合わない出力のとき: 同じく `unavailable`
