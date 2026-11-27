@@ -4,7 +4,7 @@ import unittest
 
 from tests import recorded
 from tests.recorded import FakeSystem
-from tojimari import check, cli, table
+from tojimari import check, cli, history, table
 from tojimari.runner import CommandError
 
 
@@ -100,6 +100,25 @@ class CliTest(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["checks"]["user_installed"]["method"], "from_repo_fallback")
         self.assertIn("history_fallback", [n["id"] for n in data["notices"]])
+
+    def test_new_wal_reasons_in_table_and_json(self):
+        from tojimari.history import HistoryError
+        for kind in ("no_shm", "no_wal"):
+            with self.subTest(kind=kind):
+                text = history.reason_text(kind)
+                code, out, _ = run(["check"], FakeSystem(history=HistoryError(kind)))
+                self.assertEqual(code, 0)
+                self.assertIn("[注意]", out)
+                self.assertIn(text, out)
+                for word in ("保証", "担保", "安全です", "守られています"):
+                    self.assertNotIn(word, out)
+                code, out, _ = run(["check", "--json"], FakeSystem(history=HistoryError(kind)))
+                self.assertEqual(code, 0)
+                data = json.loads(out)
+                self.assertEqual(data["checks"]["user_installed"]["method"], "from_repo_fallback")
+                n = [n for n in data["notices"] if n["id"] == "history_fallback"]
+                self.assertEqual(len(n), 1)
+                self.assertIn(text, n[0]["message"])
 
     def test_userinstalled_failure_still_zero(self):
         for argv in (["check"], ["check", "--json"]):

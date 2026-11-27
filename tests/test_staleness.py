@@ -251,7 +251,7 @@ class LastUpdateTest(unittest.TestCase):
         )
 
     def test_history_errors(self):
-        for kind in ("not_found", "busy", "missing_columns", "no_usable_time"):
+        for kind in ("not_found", "busy", "no_shm", "no_wal", "missing_columns", "no_usable_time"):
             with self.subTest(kind=kind):
                 s = FakeSystem(last_upgrade=history.HistoryError(kind))
                 st, problems = staleness.collect(s, [], None, NOW)

@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import urllib.parse
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from tojimari import history, packages, processes
 
@@ -59,8 +60,37 @@ def run_command(argv: list[str], timeout: float) -> str:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
-def _db_snapshot(path: str) -> tuple:
-    """データベースの様子（本体の大きさ・更新時刻・先頭 100 バイト、補助ファイルの大きさ）。"""
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_URI_WAL = "?mode=ro"
+_URI_IMMUTABLE = "?mode=ro&immutable=1"
+
+
+class _DbSnapshot(NamedTuple):
+    main: tuple  # (大きさ, 更新時刻 ns, 先頭 100 バイト)
+    journal: tuple | None  # 無ければ None。あれば (大きさ, 更新時刻 ns, b"")
+    wal: tuple | None  # 無ければ None。あれば (大きさ, 更新時刻 ns, 先頭 32 バイト)
+    shm: bool  # あるかどうか
+
+
+def _aux_state(path: str, head_len: int) -> tuple | None:
+    """補助ファイル 1 つの様子。無ければ None。読むだけ。"""
+    try:
+        st = os.stat(path)
+        head = b""
+        with open(path, "rb") as f:
+            if head_len:
+                head = f.read(head_len)
+    except FileNotFoundError:
+        return None
+    except PermissionError:
+        raise history.HistoryError("permission") from None
+    except OSError:
+        raise history.HistoryError("os_error") from None
+    return (st.st_size, st.st_mtime_ns, head)
+
+
+def _db_snapshot(path: str) -> _DbSnapshot:
+    """データベースの様子（本体と補助ファイル）。読むだけ。"""
     try:
         st = os.stat(path)
         with open(path, "rb") as f:
@@ -71,28 +101,41 @@ def _db_snapshot(path: str) -> tuple:
         raise history.HistoryError("permission") from None
     except OSError:
         raise history.HistoryError("os_error") from None
-    sizes = []
-    for suffix in ("-journal", "-wal"):
-        try:
-            sizes.append(os.stat(path + suffix).st_size)
-        except FileNotFoundError:
-            sizes.append(0)
-        except OSError:
-            raise history.HistoryError("os_error") from None
-    return (st.st_size, st.st_mtime_ns, head, sizes[0], sizes[1])
+    return _DbSnapshot(
+        (st.st_size, st.st_mtime_ns, head),
+        _aux_state(path + "-journal", 0),
+        _aux_state(path + "-wal", 32),
+        _aux_state(path + "-shm", 0) is not None,
+    )
+
+
+def _is_wal(head: bytes) -> bool:
+    return len(head) >= 20 and head[:16] == _SQLITE_MAGIC and head[19] == 2
 
 
 def read_history_db(path: str, query):
-    """path のデータベースを mode=ro&immutable=1 で開き、query(execute) の結果を返す。
+    """path のデータベースを読み取り専用で開き、query(execute) の結果を返す。
+    WAL 方式なら mode=ro（-wal の記録も読む。-shm と -wal が無いときは開かない）、
+    そうでなければ mode=ro&immutable=1 で開く。
     開けない、確かめに通らない、問い合わせが失敗したときは history.HistoryError。"""
     before = _db_snapshot(path)
-    if before[3] > 0 or before[4] > 0:
+    if before.journal is not None and before.journal[0] > 0:
         raise history.HistoryError("busy")
+    if _is_wal(before.main[2]):
+        if not before.shm:
+            raise history.HistoryError("no_shm")
+        if before.wal is None:
+            raise history.HistoryError("no_wal")
+        suffix = _URI_WAL
+    else:
+        if before.wal is not None and before.wal[0] > 0:
+            raise history.HistoryError("busy")
+        suffix = _URI_IMMUTABLE
 
-    uri = "file:" + urllib.parse.quote(path) + "?mode=ro&immutable=1"
+    uri = "file:" + urllib.parse.quote(path) + suffix
     conn = None
     try:
-        conn = sqlite3.connect(uri, uri=True)
+        conn = sqlite3.connect(uri, uri=True, timeout=0)
         result = query(lambda sql: conn.execute(sql).fetchall())
     except sqlite3.Error:
         raise history.HistoryError("query_failed") from None

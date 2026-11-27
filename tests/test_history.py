@@ -137,8 +137,8 @@ class LastUpgradeTest(unittest.TestCase):
 
 class ReasonTest(unittest.TestCase):
     def test_all_kinds(self):
-        kinds = ["not_found", "permission", "os_error", "busy", "changed",
-                 "query_failed", "missing_columns", "no_first_transaction",
+        kinds = ["not_found", "permission", "os_error", "busy", "no_shm", "no_wal",
+                 "changed", "query_failed", "missing_columns", "no_first_transaction",
                  "no_rpm_items", "no_usable_time"]
         for k in kinds:
             with self.subTest(kind=k):

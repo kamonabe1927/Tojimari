@@ -267,8 +267,8 @@ class UserInstalledTest(unittest.TestCase):
         self.assertEqual(by["openssl"]["evr"], "1:3.5.1-3.el10")
 
     def test_fallback_each_kind(self):
-        for kind in ("not_found", "permission", "os_error", "busy", "changed",
-                     "query_failed", "missing_columns", "no_first_transaction",
+        for kind in ("not_found", "permission", "os_error", "busy", "no_shm", "no_wal",
+                     "changed", "query_failed", "missing_columns", "no_first_transaction",
                      "no_rpm_items"):
             with self.subTest(kind=kind):
                 r = check.collect(FakeSystem(history=history.HistoryError(kind)))
