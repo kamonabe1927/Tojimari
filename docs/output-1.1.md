@@ -2,7 +2,7 @@
 
 - 作成日: 2026-11-21（issue #5 で PM が決めた）
 - 状態: 1.1 の出力の決定事項
-- 更新: 2026-11-22 表と標準エラー出力で、外部コマンド由来の制御文字を見える形に置き換える決まりを足した（issue #16、1.3・3.2）。要件は [task-issue-16.md](task-issue-16.md)。2026-11-22 今動いているかの印（版の要素の `running`・`systemd_service`、`checks.running_processes`）の JSON、注意、表を足した（issue #14、2.3・2.4・2.8・3.5）。要件は [task-issue-14.md](task-issue-14.md)。2026-11-22 古さ（`checks.staleness`）の JSON、注意、表を足した（issue #13、2.4・2.7・3.4）。要件は [task-issue-13.md](task-issue-13.md)。2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
+- 更新: 2026-11-27 Tojimari を起動した `sudo` までの親の列を今動いているかの印のもとから外した（issue #26、2.8）。要件は [task-issue-26.md](task-issue-26.md)。2026-11-22 表と標準エラー出力で、外部コマンド由来の制御文字を見える形に置き換える決まりを足した（issue #16、1.3・3.2）。要件は [task-issue-16.md](task-issue-16.md)。2026-11-22 今動いているかの印（版の要素の `running`・`systemd_service`、`checks.running_processes`）の JSON、注意、表を足した（issue #14、2.3・2.4・2.8・3.5）。要件は [task-issue-14.md](task-issue-14.md)。2026-11-22 古さ（`checks.staleness`）の JSON、注意、表を足した（issue #13、2.4・2.7・3.4）。要件は [task-issue-13.md](task-issue-13.md)。2026-11-21 後から入れたもの（`checks.user_installed`）の JSON と表を足した（issue #12、2.6 と 3.3）。要件は [task-issue-12.md](task-issue-12.md)
 - 位置付け: [spec-1.1.md](spec-1.1.md) の 6「1.1 で未決のこと」のうち、JSON の項目名と構造、人が読む表の見た目、コマンド名と起動のしかたを決める。1.1 の直後に足す FastAPI の画面も、この JSON を読んで表示する
 
 ## 1. コマンドと起動のしかた
@@ -301,8 +301,8 @@ issue #14 で決めた。取り方と、取れないときの扱いの要件は 
 
 - `running` の意味: その版が持つ実行ファイルのパスで、今動いているプロセスがある。更新で入れ替わった古い実行ファイルが動いているときも、今そのパスを持つ版に印が付く（更新前の中身かどうかは見分けない）
 - `systemd_service` の意味: そのプロセスのうち、システムのサービス（cgroup のパスのどこかの部分が `.service` で終わり、`/user.slice` の下ではないもの。`Delegate=yes` のサービスの子の cgroup も含む）として動いているものがある
-- 結びつけないもの: 実行ファイルの無いもの（カーネルのスレッドなど）、見回しているあいだに終わったもの、Tojimari 自身とその子プロセス、Tojimari と違うルートディレクトリで動いているもの（Docker コンテナの中など）。マウントの名前空間だけが違うもの（`PrivateTmp=` などのある systemd のサービス）は結びつける
-- Tojimari の親（`sudo`）は除かない。`sudo` で実行すると、重点リストの `sudo` の版には `running` が true で出る。その瞬間に実際に動いているためで、誤りではない
+- 結びつけないもの: 実行ファイルの無いもの（カーネルのスレッドなど）、見回しているあいだに終わったもの、Tojimari 自身とその子プロセス、Tojimari を起動した `sudo` までの親の列、Tojimari と違うルートディレクトリで動いているもの（Docker コンテナの中など）。マウントの名前空間だけが違うもの（`PrivateTmp=` などのある systemd のサービス）は結びつける
+- Tojimari を起動した `sudo` までの親の列（issue #26 で変えた。[task-issue-26.md](task-issue-26.md)）: Tojimari から親をたどり、いちばん近い `sudo` までの列（間にシェルなどがあればそれも）と、その上に続く `sudo` を結びつけない。そのため `sudo python3 -B -m tojimari check` で実行しても、ほかに `sudo` が動いていなければ、重点リストの `sudo` の版の `running` は false になる。列のいちばん上の `sudo` より上（ログインのシェル、`sshd` など）と、ほかの端末などで動いている `sudo` は結びつける。親をたどって `sudo` が無いときは、親や祖先を除かない。`sudo` かどうかは、実行ファイルのパスを rpm の記録で引き、`sudo` のパッケージが持つパスかで見分ける
 - kernel の版の `running` は、プロセスの実行ファイルではないので、いつも false（`ok` のとき）。動いているカーネルは `is_running_kernel` で見る
 - 実行ファイルのパス、pid、サービスの名前は出さない（パスに利用者の名前などが入りうるため。印に要るものだけを出す）
 - `false` は「見えた範囲で、その瞬間に動いていなかった」という意味で、「使っていない」ではない。読む側は `status` と `unreadable` を先に見る
