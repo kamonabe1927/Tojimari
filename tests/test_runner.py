@@ -1,8 +1,10 @@
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 from tests import recorded
@@ -142,6 +144,37 @@ def error_kind(case, path, query=history.query_first_transaction):
     return cm.exception.kind
 
 
+def make_wal_db(directory):
+    """directory の下に、-wal に記録が残った WAL 方式のデータベースを作り、本体のパスを返す。
+    1 番の処理（bash）は本体に、2 番の処理（時刻 30〜40）は -wal の中にだけある。"""
+    src = os.path.join(directory, "src")
+    dst = os.path.join(directory, "db")
+    os.mkdir(src)
+    os.mkdir(dst)
+    path = os.path.join(src, "history.sqlite")
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        recorded.make_upgrade_history_db(conn, {1: (10, 20, 1, [6])})
+        conn.execute("INSERT INTO rpm VALUES (1, 'bash', 0, '1', '1', 'x')")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("INSERT INTO trans VALUES (2, 30, 40, '', '', '', 0, '', 1, '')")
+        conn.execute("INSERT INTO trans_item VALUES (2, 2, 2, '', 6, 0, 0)")
+        conn.commit()
+        for name in ("history.sqlite", "history.sqlite-shm", "history.sqlite-wal"):
+            shutil.copy(os.path.join(src, name), os.path.join(dst, name))
+    finally:
+        conn.close()
+    return os.path.join(dst, "history.sqlite")
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
 class ReadHistoryDbTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -156,25 +189,29 @@ class ReadHistoryDbTest(unittest.TestCase):
         )
 
     def test_files_unchanged(self):
-        for wal in (False, True):
-            with self.subTest(wal=wal):
-                d = os.path.join(self.dir, f"wal{wal}")
-                os.mkdir(d)
-                path = make_db(d, wal=wal)
-                before = listing(d)
-                with open(path, "rb") as f:
-                    content = f.read()
-                read_history_db(path, history.query_first_transaction)
-                self.assertEqual(listing(d), before)
-                with open(path, "rb") as f:
-                    self.assertEqual(f.read(), content)
+        path = make_db(self.dir)
+        before = listing(self.dir)
+        content = read_bytes(path)
+        read_history_db(path, history.query_first_transaction)
+        self.assertEqual(listing(self.dir), before)
+        self.assertEqual(read_bytes(path), content)
+
+    def test_wal_closed_normally_is_no_shm(self):
+        # WAL 方式で作って普通に閉じたもの（補助ファイルが無い）は開かない
+        path = make_db(self.dir, wal=True)
+        before = listing(self.dir)
+        content = read_bytes(path)
+        self.assertEqual(error_kind(self, path), "no_shm")
+        self.assertEqual(listing(self.dir), before)
+        self.assertEqual(read_bytes(path), content)
 
     def test_not_found_creates_nothing(self):
         path = os.path.join(self.dir, "history.sqlite")
         self.assertEqual(error_kind(self, path), "not_found")
         self.assertEqual(listing(self.dir), [])
 
-    def test_busy(self):
+    def test_busy_when_not_wal(self):
+        # WAL 方式でないときだけ、-journal と -wal の中身で止める
         for suffix in ("-journal", "-wal"):
             with self.subTest(suffix=suffix):
                 d = os.path.join(self.dir, suffix[1:])
@@ -182,7 +219,9 @@ class ReadHistoryDbTest(unittest.TestCase):
                 path = make_db(d)
                 with open(path + suffix, "wb") as f:
                     f.write(b"x" * 8)
+                before = listing(d)
                 self.assertEqual(error_kind(self, path), "busy")
+                self.assertEqual(listing(d), before)
 
     def test_empty_aux_files_ok(self):
         path = make_db(self.dir)
@@ -281,13 +320,179 @@ class ReadHistoryDbTest(unittest.TestCase):
             frozenset({"bash", "sudo"}),
         )
 
-    def test_uri_has_both_options(self):
-        path = make_db(self.dir)
-        with mock.patch.object(runner.sqlite3, "connect", wraps=sqlite3.connect) as m:
-            read_history_db(path, lambda execute: 1)
-        uri = m.call_args.args[0]
-        self.assertTrue(uri.endswith("?mode=ro&immutable=1"))
-        self.assertTrue(m.call_args.kwargs.get("uri"))
+    def test_uri_by_mode(self):
+        wal_path = make_wal_db(self.dir)
+        plain = os.path.join(self.dir, "plain")
+        os.mkdir(plain)
+        plain_path = make_db(plain)
+        for path, tail in ((wal_path, "?mode=ro"), (plain_path, "?mode=ro&immutable=1")):
+            with self.subTest(tail=tail):
+                with mock.patch.object(runner.sqlite3, "connect", wraps=sqlite3.connect) as m:
+                    read_history_db(path, lambda execute: 1)
+                uri = m.call_args.args[0]
+                self.assertTrue(uri.endswith(tail))
+                if tail == "?mode=ro":
+                    self.assertNotIn("immutable", uri)
+                self.assertIs(m.call_args.kwargs.get("uri"), True)
+                self.assertEqual(m.call_args.kwargs.get("timeout"), 0)
+
+    def test_not_connect_when_aux_missing(self):
+        path = make_wal_db(self.dir)
+        os.remove(path + "-shm")
+        with mock.patch.object(runner.sqlite3, "connect") as m:
+            self.assertEqual(error_kind(self, path), "no_shm")
+        m.assert_not_called()
+
+    def test_shm_permission(self):
+        path = make_wal_db(self.dir)
+        real = os.stat
+
+        def fake(p, *a, **kw):
+            if str(p).endswith("-shm"):
+                raise PermissionError()
+            return real(p, *a, **kw)
+
+        with mock.patch("tojimari.runner.os.stat", side_effect=fake):
+            self.assertEqual(error_kind(self, path), "permission")
+
+    def test_wal_flag_without_database(self):
+        path = os.path.join(self.dir, "history.sqlite")
+        with open(path, "wb") as f:
+            f.write(b"this is not a database" * 20)
+        with open(path, "r+b") as f:
+            f.seek(19)
+            f.write(b"\x02")
+        self.assertEqual(error_kind(self, path), "query_failed")
+        self.assertEqual(listing(self.dir), ["history.sqlite"])
+
+
+class WalReadTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = self._tmp.name
+        self.path = make_wal_db(self.dir)
+        self.db_dir = os.path.dirname(self.path)
+
+    def test_reads_wal_records(self):
+        self.assertEqual(
+            read_history_db(self.path, history.query_first_transaction),
+            frozenset({"bash"}),
+        )
+        self.assertEqual(read_history_db(self.path, history.query_last_upgrade), 40)
+        # 本体だけを読むと古い時刻になる（-wal の中の記録を読んでいる証拠）
+        uri = "file:" + urllib.parse.quote(self.path) + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            self.assertEqual(history.query_last_upgrade(lambda q: conn.execute(q).fetchall()), 20)
+        finally:
+            conn.close()
+
+    def test_files_unchanged(self):
+        before = listing(self.db_dir)
+        main = read_bytes(self.path)
+        wal = read_bytes(self.path + "-wal")
+        self.assertGreater(len(wal), 0)
+        read_history_db(self.path, history.query_last_upgrade)
+        read_history_db(self.path, history.query_first_transaction)
+        self.assertEqual(listing(self.db_dir), before)
+        self.assertEqual(read_bytes(self.path), main)
+        self.assertEqual(read_bytes(self.path + "-wal"), wal)
+
+    def test_no_shm(self):
+        os.remove(self.path + "-shm")
+        before = listing(self.db_dir)
+        self.assertEqual(error_kind(self, self.path), "no_shm")
+        self.assertEqual(listing(self.db_dir), before)
+        os.remove(self.path + "-wal")
+        before = listing(self.db_dir)
+        self.assertEqual(error_kind(self, self.path), "no_shm")
+        self.assertEqual(listing(self.db_dir), before)
+
+    def test_shm_without_wal(self):
+        os.remove(self.path + "-wal")
+        before = listing(self.db_dir)
+        self.assertEqual(error_kind(self, self.path), "no_wal")
+        self.assertEqual(listing(self.db_dir), before)
+
+    def test_empty_wal(self):
+        open(self.path + "-wal", "wb").close()
+        before = listing(self.db_dir)
+        self.assertEqual(
+            read_history_db(self.path, history.query_first_transaction), frozenset({"bash"})
+        )
+        self.assertEqual(read_history_db(self.path, history.query_last_upgrade), 20)
+        self.assertEqual(listing(self.db_dir), before)
+
+    def test_empty_shm(self):
+        open(self.path + "-shm", "wb").close()
+        before = listing(self.db_dir)
+        self.assertEqual(read_history_db(self.path, history.query_last_upgrade), 40)
+        self.assertEqual(listing(self.db_dir), before)
+
+    def test_journal_with_content_is_busy(self):
+        with open(self.path + "-journal", "wb") as f:
+            f.write(b"x" * 8)
+        self.assertEqual(error_kind(self, self.path), "busy")
+
+    def test_write_sql_fails(self):
+        def query(execute):
+            with self.assertRaises(sqlite3.Error):
+                execute("INSERT INTO trans (id) VALUES (99)")
+            return 1
+
+        self.assertEqual(read_history_db(self.path, query), 1)
+
+    def test_connection_closed_after(self):
+        holder = {}
+
+        def query(execute):
+            holder["execute"] = execute
+            return 1
+
+        read_history_db(self.path, query)
+        with self.assertRaises(sqlite3.Error):
+            holder["execute"]("SELECT 1")
+
+    def test_changed_main(self):
+        def query(execute):
+            result = history.query_first_transaction(execute)
+            with open(self.path, "ab") as f:
+                f.write(b"0")
+            return result
+
+        self.assertEqual(error_kind(self, self.path, query), "changed")
+
+    def test_changed_by_other_writer(self):
+        writer = sqlite3.connect(self.path)
+        self.addCleanup(writer.close)
+
+        def query(execute):
+            result = history.query_first_transaction(execute)
+            writer.execute("INSERT INTO trans VALUES (3, 50, 60, '', '', '', 0, '', 1, '')")
+            writer.commit()
+            return result
+
+        self.assertEqual(error_kind(self, self.path, query), "changed")
+
+    def test_changed_wal_mtime_only(self):
+        wal = self.path + "-wal"
+
+        def query(execute):
+            result = history.query_first_transaction(execute)
+            st = os.stat(wal)
+            os.utime(wal, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+            return result
+
+        self.assertEqual(error_kind(self, self.path, query), "changed")
+
+    def test_changed_shm_removed(self):
+        def query(execute):
+            result = history.query_first_transaction(execute)
+            os.remove(self.path + "-shm")
+            return result
+
+        self.assertEqual(error_kind(self, self.path, query), "changed")
 
 
 class ReadLastUpgradeTest(unittest.TestCase):
