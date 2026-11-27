@@ -27,6 +27,8 @@ design-issue-5.md の一方向の流れに、dnf 履歴のデータベースを�
 
 ## 2. dnf 履歴のデータベースの開き方
 
+> #25 で変えた（2026-11-27）: 開き方は 1 通りではなくなった。WAL 方式のときは `mode=ro` だけで開いて `-wal` の中の記録も読み、`-wal` に中身があることでは止めない。様子に入れるものと止める条件も変わった。今の決まりは [design-issue-25.md](design-issue-25.md) の 3。下の 2.1〜2.3 は #12 の時点の記録として残す。
+
 ### 2.1 決めたこと
 
 - パスは `/var/lib/dnf/history.sqlite` に固定する（`history.DB_PATH`）
@@ -74,6 +76,7 @@ design-issue-5.md の一方向の流れに、dnf 履歴のデータベースを�
 
 - 2 と 4 は SQLite のロックほど確実ではない。ただし、外れたときに起きるのは「1 回の表示で OS 標準の名前の集まりがずれる」か「問い合わせが失敗して代わりの判定になる」で、何かを書き換えることは無い。読むのは一瞬で、dnf を動かしている最中に `tojimari check` を打ったときだけ関係する
 - 検証用 VM のデータベースが WAL の方式で、dnf が動いていないときも `-wal` に中身が残る作りだった場合、2 でいつも止まり、いつも代わりの判定になる。そのときは `history_fallback` の注意に理由が出るので、実機確認（9 の G、H）で分かる。その場合に WAL を通して読むには `-shm` への書き込みが避けられない（上の表の 1 行目）ので、設計では決めず、PM に返して要件（3.5）の扱いを決め直す
+  - #25 で変えた: 検証用 VM でこのとおりになり、本人が扱いを決めた（既にある `-shm` に SQLite が触れることは受け入れ、新しいファイルは作らない）。[design-issue-25.md](design-issue-25.md)
 
 ## 3. ファイルと関数
 
@@ -138,7 +141,7 @@ class System:
     def history_first_names(self) -> frozenset[str]   # read_history_db(history.DB_PATH, history.query_first_transaction)
 ```
 
-`read_history_db` の決まり:
+`read_history_db` の決まり（#25 で変えた: 様子の中身、URI、`busy` の条件は [design-issue-25.md](design-issue-25.md) の 4.2 が今の決まり）:
 
 - 様子を取る内部の関数（`_db_snapshot(path)`）を作る。本体の `os.stat` と、`open(path, "rb")` での先頭 100 バイトの読み取り、`-journal` と `-wal` の `os.stat`（`FileNotFoundError` なら大きさ 0）
 - 例外の対応: 本体が `FileNotFoundError` → `not_found`、`PermissionError` → `permission`、そのほかの `OSError` → `os_error`。補助のファイルで `FileNotFoundError` 以外の `OSError` → `os_error`
@@ -260,13 +263,16 @@ htop        3.3.0-5.el10   aarch64  epel
 | `not_found` | データベースのファイルが無い | dnf 履歴のデータベースが見つからない |
 | `permission` | 読む権限が無い（root なしなど） | dnf 履歴のデータベースを読む権限が無い |
 | `os_error` | そのほかの理由で様子を取れない | dnf 履歴のデータベースを開けなかった |
-| `busy` | `-journal` か `-wal` に中身がある | dnf 履歴のデータベースに書きかけの記録があった（dnf が動いている途中の可能性がある） |
+| `busy` | `-journal` に中身がある。または、WAL 方式でないのに `-wal` に中身がある（#25 で変えた。WAL 方式では `-wal` に中身があっても止めない） | dnf 履歴のデータベースに書きかけの記録があった（dnf が動いている途中の可能性がある） |
+| `no_shm` | WAL 方式で、`-shm` のファイルが無い（#25 で足した） | dnf 履歴のデータベースの補助ファイル（-shm）が無かった（開くと新しいファイルが作られるため、開かなかった） |
+| `no_wal` | WAL 方式で、`-shm` はあるが `-wal` のファイルが無い（#25 で足した） | dnf 履歴のデータベースの補助ファイル（-wal）が無かった（開くと新しいファイルが作られるため、開かなかった） |
 | `changed` | 読んでいる間に様子が変わった | 読んでいる間に dnf 履歴のデータベースが書き換わった |
 | `query_failed` | SQLite が失敗した（壊れている、データベースでない、など） | dnf 履歴のデータベースへの問い合わせが失敗した |
 | `missing_columns` | 使う列が無い | dnf 履歴のデータベースに、使う列が無かった |
 | `no_first_transaction` | id が 1 の処理が無い | dnf 履歴に 1 番の処理が無かった |
 | `no_rpm_items` | 1 番にパッケージが 1 件も無い | dnf 履歴の 1 番にパッケージが 1 件も無かった |
 
+- #13 で `no_usable_time`（dnf 履歴の処理の時刻を読み取れなかった）が足されている（[design-issue-13.md](design-issue-13.md)）。`no_shm` と `no_wal` の経緯は [design-issue-25.md](design-issue-25.md) の 3.6
 - 理由の要約は Tojimari が決めた上の文だけにする。パス、SQLite のメッセージ、例外の文字列は出力に入れない
 
 ## 6. テストの方針
@@ -292,6 +298,7 @@ htop        3.3.0-5.el10   aarch64  epel
 1. 3.1 の表のファイルを、3.2〜3.7 と 4、5 のとおりに変える。`cli.py` は変えない
 2. `history.py` は `sqlite3`、`os`、`subprocess` を import しない。データベースに触れるのは `runner.read_history_db` だけにする
 3. 開き方は `mode=ro&immutable=1` の 1 通りだけ。`mode=ro` だけ、`immutable=1` だけの開き方をコードにもテストにも作らない（2.2 のとおり、ファイルが作られる）
+   - #25 で変えた: WAL 方式で `-shm` と `-wal` の両方があるときに限り、`mode=ro` だけで開く（[design-issue-25.md](design-issue-25.md) の 3.2）
 4. SQL は `history.py` の定数だけ。文字列を組み立てて SQL にしない（テーブル名は `REQUIRED_COLUMNS` の固定の名前だけ）
 5. 出力（JSON、表、notice）に入れる理由は 5 の表の文だけ。例外の文字列、SQLite や dnf のメッセージ、パスを入れない
 6. 6 のテストを書き、リポジトリの最上位で `python3 -m unittest` が全部通ることを確かめる。テストが作るファイルは一時ディレクトリの中だけにし、終わったら残さない
@@ -331,7 +338,7 @@ task-issue-12.md の 6 の手順に、次を足す・置き換える。セキュ
 | G | `sudo python3 -B -c "print(open('/var/lib/dnf/history.sqlite','rb').read(20)[18:20])"` | `b'\x01\x01'` か `b'\x02\x02'` のどちらが出たか（データベースの記録方式。`\x02` なら WAL） |
 | H | `sudo stat -c '%n %s' /var/lib/dnf/history.sqlite*`（dnf を動かしていないときに） | `history.sqlite-wal` や `history.sqlite-journal` があるか、その大きさ。0 より大きいものがあれば、手順 2 と 3 は代わりの判定になり、`[注意]` に「書きかけの記録があった」と出る見込み。そうなったら結果を伝えてほしい（2.3 のとおり、要件の決め直しが要る） |
 | I | `dnf repoquery --userinstalled --cacheonly --quiet --queryformat $'%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{from_repo}\n' \| cat -A \| head -5; echo "exit=${PIPESTATUS[0]}"`（表の中なので `\|` と書いた。打つときは `|`。task-issue-12.md の 6 の手順 6 の呼び方はこれ） | 終了コードが 0。1 件ごとに 6 項目がタブ区切りで出る。epoch の無いものが `0` と出る |
-| J | task-issue-12.md の 6 の最後にある件数だけを出すコマンドは、`mode=ro` を `mode=ro&immutable=1` に置き換えて使う | 数が出る。`mode=ro` だけで開くと、2.2 のとおり `/var/lib/dnf/` にファイルが作られることがある |
+| J | task-issue-12.md の 6 の最後にある件数だけを出すコマンドは、`mode=ro` を `mode=ro&immutable=1` に置き換えて使う | 数が出る。`mode=ro` だけで開くと、2.2 のとおり `/var/lib/dnf/` にファイルが作られることがある。#25 で分かったこと: 検証用 VM は WAL 方式なので、このコマンドは本体だけを読み、`-wal` の中の記録を含まない（[design-issue-25.md](design-issue-25.md) の 7） |
 
 分かっていないことと、外れたときの動き:
 
