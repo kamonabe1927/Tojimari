@@ -551,6 +551,7 @@ def running_report(**kw):
         make_proc(11, exe="/usr/bin/htop"),
         make_proc(100, exe="/usr/bin/sudo", ppid=50),
         make_proc(SELF_PID, exe="/usr/bin/git", ppid=100),
+        make_proc(200, exe="/usr/bin/sudo", ppid=1),
     ]
     return report(processes=make_scan(*procs), **kw)
 
@@ -569,6 +570,14 @@ class RunningMarkTest(unittest.TestCase):
 
     def test_running_only_mark_in_focus(self):
         self.assertTrue(line_of(self.text, "sudo").endswith("appstream  <- 今動いている"))
+
+    def test_launching_sudo_alone_has_no_mark(self):
+        procs = [
+            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/git", ppid=100),
+        ]
+        text = table.render_table(report(processes=make_scan(*procs)))
+        self.assertNotIn("<- 今動いている", line_of(text, "sudo"))
 
     def test_user_installed_marks(self):
         self.assertTrue(line_of(self.text, "htop").endswith("epel  <- 今動いている"))

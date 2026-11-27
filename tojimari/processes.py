@@ -7,6 +7,7 @@ from tojimari import packages
 
 PF_KTHREAD = 0x00200000
 _DELETED_SUFFIX = " (deleted)"
+SUDO_PACKAGE = "sudo"
 
 
 @dataclass(frozen=True)
@@ -91,12 +92,57 @@ def _descendants_of(self_pid: int, ppids: dict[int, int]) -> set[int]:
     return result
 
 
-def classify(scan: ProcessScan) -> tuple[list[tuple[str, bool]], int]:
+def exe_paths(scan: ProcessScan) -> frozenset[str]:
+    """rpm の記録で引くパス。実行ファイルを読めたすべてのプロセスの、
+    " (deleted)" を取り除いたパス。"""
+    return frozenset(
+        strip_deleted(p.exe)
+        for p in scan.processes
+        if p.exe_error is None and p.exe is not None
+    )
+
+
+def sudo_paths(file_map) -> frozenset[str]:
+    """sudo のパッケージが持つパス。"""
+    return packages.paths_owned_by(file_map, SUDO_PACKAGE)
+
+
+def _launch_chain(self_pid, ppids, exes, sudo_paths) -> set[int]:
+    """Tojimari の親から、いちばん近い sudo と、その上に続く sudo までの pid。
+    sudo が無ければ空。"""
+    chain: set[int] = set()
+    seen = {self_pid}
+    found_sudo = False
+    cur = ppids.get(self_pid)
+    while cur is not None and cur != 0 and cur not in seen:
+        seen.add(cur)
+        exe = exes.get(cur)
+        is_sudo = exe is not None and exe in sudo_paths
+        if is_sudo:
+            found_sudo = True
+        elif found_sudo:
+            break
+        chain.add(cur)
+        cur = ppids.get(cur)
+    if not found_sudo:
+        return set()
+    return chain
+
+
+def classify(
+    scan: ProcessScan, sudo_paths=frozenset()
+) -> tuple[list[tuple[str, bool]], int]:
     """(候補の (パス, サービスか) の並び, unreadable の数)。"""
     parsed = {p.pid: parse_stat(p.stat) for p in scan.processes}
     ppids = {pid: st[1] for pid, st in parsed.items() if st is not None}
+    exes = {
+        p.pid: strip_deleted(p.exe)
+        for p in scan.processes
+        if p.exe_error is None and p.exe is not None
+    }
     excluded = _descendants_of(scan.self_pid, ppids)
     excluded.add(scan.self_pid)
+    excluded |= _launch_chain(scan.self_pid, ppids, exes, sudo_paths)
 
     candidates: list[tuple[str, bool]] = []
     unreadable = 0

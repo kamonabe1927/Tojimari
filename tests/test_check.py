@@ -592,7 +592,7 @@ def marks_of(v):
     return (v["running"], v["systemd_service"])
 
 
-def running_system(**kw):
+def running_system(extra=(), **kw):
     procs = [
         make_proc(10, exe="/usr/sbin/sshd", cgroup=SERVICE_CGROUP),
         make_proc(11, exe="/usr/bin/htop"),
@@ -600,6 +600,7 @@ def running_system(**kw):
         make_proc(SELF_PID, exe="/usr/bin/git", ppid=100),
         make_proc(5001, exe="/usr/bin/bash", ppid=SELF_PID),
     ]
+    procs.extend(extra)
     return FakeSystem(processes=make_scan(*procs), **kw)
 
 
@@ -622,13 +623,29 @@ class RunningTest(unittest.TestCase):
         self.assertEqual(r["checks"]["running_processes"], {"status": "ok", "unreadable": 0})
         self.assertEqual(list(r["checks"]["running_processes"]), ["status", "unreadable"])
         self.assertEqual(marks_of(pkg(r, "openssh-server")["installed"][0]), (True, True))
-        self.assertEqual(marks_of(pkg(r, "sudo")["installed"][0]), (True, False))
+        # Tojimari を起動した sudo（pid 100）には印が付かない
+        self.assertEqual(marks_of(pkg(r, "sudo")["installed"][0]), (False, False))
         self.assertEqual(marks_of(pkg(r, "polkit")["installed"][0]), (False, False))
         self.assertEqual(marks_of(ui_by_name(r)["htop"]), (True, False))
         # Tojimari 自身（git の実行ファイルとして置いた）とその子には印が付かない
         self.assertEqual(marks_of(ui_by_name(r)["git"]), (False, False))
         self.assertEqual(marks_of(pkg(r, "kernel")["installed"][0]), (False, False))
         self.assertNotIn("running_partial", notice_ids(r))
+
+    def test_unrelated_sudo_is_marked(self):
+        extra = [make_proc(200, exe="/usr/bin/sudo", ppid=1)]
+        r = check.collect(running_system(extra=extra))
+        self.assertEqual(r["checks"]["running_processes"], {"status": "ok", "unreadable": 0})
+        self.assertEqual(marks_of(pkg(r, "sudo")["installed"][0]), (True, False))
+
+    def test_sudo_not_stripped_when_started_from_shell(self):
+        procs = [
+            make_proc(200, exe="/usr/bin/sudo", ppid=1),
+            make_proc(60, exe="/usr/bin/bash", ppid=1),
+            make_proc(SELF_PID, exe="/usr/bin/git", ppid=60),
+        ]
+        r = check.collect(FakeSystem(processes=make_scan(*procs)))
+        self.assertEqual(marks_of(pkg(r, "sudo")["installed"][0]), (True, False))
 
     def test_systemd_package_marked_via_service(self):
         procs = [make_proc(10, exe="/usr/lib/systemd/systemd-journald", cgroup=SERVICE_CGROUP),

@@ -189,6 +189,26 @@ class ParseDnfTest(unittest.TestCase):
         self.assertEqual(packages.parse_dnf_from_repo(""), {})
 
 
+class PathsOwnedByTest(unittest.TestCase):
+    def test_paths_owned_by(self):
+        sudo_key = packages.version_key("sudo", "0", "1.9", "1.el10", "aarch64")
+        other_key = packages.version_key("bash", "0", "5.2", "1.el10", "aarch64")
+        sudo_new = packages.version_key("sudo", "0", "1.9", "2.el10", "aarch64")
+        file_map = {
+            "/a/sudo": frozenset({sudo_key}),
+            "/a/bash": frozenset({other_key}),
+            "/a/shared": frozenset({other_key, sudo_new}),
+        }
+        self.assertEqual(
+            packages.paths_owned_by(file_map, "sudo"), frozenset({"/a/sudo", "/a/shared"})
+        )
+        self.assertEqual(packages.paths_owned_by(file_map, "bash"), frozenset({"/a/bash", "/a/shared"}))
+        self.assertEqual(packages.paths_owned_by(file_map, "nothing"), frozenset())
+
+    def test_empty(self):
+        self.assertEqual(packages.paths_owned_by({}, "sudo"), frozenset())
+
+
 class FormatTest(unittest.TestCase):
     def test_evr(self):
         self.assertEqual(

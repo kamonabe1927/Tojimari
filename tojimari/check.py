@@ -159,15 +159,15 @@ def _collect_running(system) -> tuple[dict | None, dict, str | None]:
         scan = system.process_scan()
     except processes.ScanError:
         return None, dict(_RUNNING_UNAVAILABLE), _PROC_REASON
-    candidates, unreadable = processes.classify(scan)
     try:
         file_map = packages.parse_rpm_files(
-            system.rpm_files(), frozenset(path for path, _ in candidates)
+            system.rpm_files(), processes.exe_paths(scan)
         )
     except CommandError as err:
         return None, dict(_RUNNING_UNAVAILABLE), notices.command_reason("rpm", err)
     except packages.ParseError:
         return None, dict(_RUNNING_UNAVAILABLE), _RPM_FILES_PARSE_REASON
+    candidates, unreadable = processes.classify(scan, processes.sudo_paths(file_map))
     marks = processes.build_marks(candidates, file_map)
     return marks, {"status": "ok", "unreadable": unreadable}, None
 

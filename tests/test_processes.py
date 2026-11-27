@@ -8,7 +8,7 @@ from tests.recorded import (
     make_proc,
     make_scan,
 )
-from tojimari import processes
+from tojimari import packages, processes
 from tojimari.processes import (
     apply_marks,
     build_marks,
@@ -50,13 +50,13 @@ class ClassifyKeepTest(unittest.TestCase):
         scan = make_scan(make_proc(10, exe="/usr/sbin/a", cgroup=SERVICE_CGROUP))
         self.assertEqual(classify(scan), ([("/usr/sbin/a", True)], 0))
 
-    def test_parent_and_grandparent_of_self_are_kept(self):
+    def test_ancestors_kept_without_sudo(self):
         scan = make_scan(
-            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(100, exe="/usr/bin/su", ppid=50),
             make_proc(50, exe="/usr/bin/shell", ppid=1),
             make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
         )
-        self.assertEqual(paths(scan), ["/usr/bin/sudo", "/usr/bin/shell"])
+        self.assertEqual(paths(scan), ["/usr/bin/su", "/usr/bin/shell"])
 
     def test_stat_none_kept_if_exe_readable(self):
         scan = make_scan(make_proc(10, exe="/usr/bin/a", stat=None))
@@ -65,6 +65,170 @@ class ClassifyKeepTest(unittest.TestCase):
     def test_deleted_suffix_removed(self):
         scan = make_scan(make_proc(10, exe="/usr/sbin/a (deleted)"))
         self.assertEqual(paths(scan), ["/usr/sbin/a"])
+
+
+SUDO = frozenset({"/usr/bin/sudo"})
+
+
+def kept(*procs, sudo=SUDO):
+    return classify(make_scan(*procs), sudo)
+
+
+class ClassifyLaunchChainTest(unittest.TestCase):
+    def test_parent_sudo_excluded(self):
+        cands, unreadable = kept(
+            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual((cands, unreadable), ([], 0))
+
+    def test_unrelated_sudo_kept(self):
+        cands, _ = kept(
+            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+            make_proc(200, exe="/usr/bin/sudo", ppid=1),
+        )
+        self.assertEqual(cands, [("/usr/bin/sudo", False)])
+
+    def test_two_stacked_sudo(self):
+        cands, _ = kept(
+            make_proc(90, exe="/usr/bin/sudo", ppid=50),
+            make_proc(100, exe="/usr/bin/sudo", ppid=90),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(cands, [])
+
+    def test_shell_between_excluded(self):
+        cands, _ = kept(
+            make_proc(90, exe="/usr/bin/sudo", ppid=1),
+            make_proc(100, exe="/usr/bin/sh", ppid=90),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(cands, [])
+
+    def test_above_chain_kept(self):
+        cands, _ = kept(
+            make_proc(10, exe="/usr/sbin/sshd", ppid=1),
+            make_proc(50, exe="/usr/bin/bash", ppid=10),
+            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(
+            cands, [("/usr/sbin/sshd", False), ("/usr/bin/bash", False)]
+        )
+
+    def test_no_sudo_keeps_shell(self):
+        cands, _ = kept(
+            make_proc(50, exe="/usr/bin/bash", ppid=1),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=50),
+        )
+        self.assertEqual(cands, [("/usr/bin/bash", False)])
+
+    def test_far_sudo_and_shell_kept(self):
+        cands, _ = kept(
+            make_proc(30, exe="/usr/bin/sudo", ppid=1),
+            make_proc(40, exe="/usr/bin/bash", ppid=30),
+            make_proc(100, exe="/usr/bin/sudo", ppid=40),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(
+            cands, [("/usr/bin/sudo", False), ("/usr/bin/bash", False)]
+        )
+
+    def test_deleted_sudo_excluded(self):
+        cands, _ = kept(
+            make_proc(100, exe="/usr/bin/sudo (deleted)", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(cands, [])
+
+    def test_unreadable_between_is_passed_and_not_counted(self):
+        cands, unreadable = kept(
+            make_proc(90, exe="/usr/bin/sudo", ppid=1),
+            make_proc(100, exe_error="permission", ppid=90),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual((cands, unreadable), ([], 0))
+
+    def test_unreadable_without_sudo_still_counted(self):
+        cands, unreadable = kept(
+            make_proc(100, exe_error="permission", ppid=1),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual((cands, unreadable), ([], 1))
+
+    def test_stat_none_ancestor_stops_chain(self):
+        cands, _ = kept(
+            make_proc(90, exe="/usr/bin/sudo", ppid=1),
+            make_proc(100, exe="/usr/bin/sh", stat=None),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(
+            cands, [("/usr/bin/sudo", False), ("/usr/bin/sh", False)]
+        )
+
+    def test_ppid_cycle_without_sudo(self):
+        cands, _ = kept(
+            make_proc(100, exe="/usr/bin/a", ppid=90),
+            make_proc(90, exe="/usr/bin/b", ppid=100),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(
+            cands, [("/usr/bin/a", False), ("/usr/bin/b", False)]
+        )
+
+    def test_ppid_cycle_with_sudo(self):
+        cands, _ = kept(
+            make_proc(100, exe="/usr/bin/sudo", ppid=90),
+            make_proc(90, exe="/usr/bin/sudo", ppid=100),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+        )
+        self.assertEqual(cands, [])
+
+    def test_other_child_of_chain_shell_kept(self):
+        cands, _ = kept(
+            make_proc(90, exe="/usr/bin/sudo", ppid=1),
+            make_proc(100, exe="/usr/bin/sh", ppid=90),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+            make_proc(300, exe="/usr/bin/other", ppid=100),
+        )
+        self.assertEqual(cands, [("/usr/bin/other", False)])
+
+    def test_empty_sudo_paths_keeps_parent(self):
+        cands, _ = kept(
+            make_proc(100, exe="/usr/bin/sudo", ppid=50),
+            make_proc(SELF_PID, exe="/usr/bin/py", ppid=100),
+            sudo=frozenset(),
+        )
+        self.assertEqual(cands, [("/usr/bin/sudo", False)])
+
+
+class ExePathsTest(unittest.TestCase):
+    def test_exe_paths(self):
+        scan = make_scan(
+            make_proc(10, exe="/usr/bin/a"),
+            make_proc(11, exe="/usr/sbin/b (deleted)"),
+            make_proc(12, exe_error="permission"),
+            make_proc(13, exe_error="gone"),
+            make_proc(SELF_PID, exe="/usr/bin/py"),
+            make_proc(14, exe="/usr/bin/other-root", root=OTHER_ROOT),
+        )
+        self.assertEqual(
+            processes.exe_paths(scan),
+            frozenset({"/usr/bin/a", "/usr/sbin/b", "/usr/bin/py", "/usr/bin/other-root"}),
+        )
+
+
+class SudoPathsTest(unittest.TestCase):
+    def test_sudo_paths(self):
+        sudo_key = packages.version_key("sudo", "0", "1.9", "1.el10", "aarch64")
+        bash_key = packages.version_key("bash", "0", "5.2", "1.el10", "aarch64")
+        file_map = {
+            "/usr/bin/sudo": frozenset({sudo_key}),
+            "/usr/bin/bash": frozenset({bash_key}),
+        }
+        self.assertEqual(processes.sudo_paths(file_map), frozenset({"/usr/bin/sudo"}))
+        self.assertEqual(processes.sudo_paths({}), frozenset())
 
 
 class ClassifyExcludeTest(unittest.TestCase):
